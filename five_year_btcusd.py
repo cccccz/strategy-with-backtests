@@ -2,35 +2,118 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from ta.trend import MACD  # 使用 ta 库计算 MACD
+from ta.trend import MACD  
+import ta
 from datetime import datetime, timedelta
+import math
 
 # 获取近 3 年比特币数据
-def get_btc_data(years=3, extra_days=26):
+# def get_btc_data(years=3, extra_days=26):
+#     end_time = datetime.now()
+#     start_time = end_time - timedelta(days=365 * years + extra_days)
+    
+#     url = "https://api.binance.com/api/v3/klines"
+#     params = {
+#         'symbol': 'BTCUSDT',
+#         'interval': '4h',
+#         'startTime': int(start_time.timestamp() * 1000),
+#         'endTime': int(end_time.timestamp() * 1000),
+#         'limit': 1000 + extra_days
+#     }
+    
+#     response = requests.get(url, params=params)
+#     data = response.json()
+    
+#     df = pd.DataFrame(data, columns=[
+#         'timestamp', 'open', 'high', 'low', 'close', 'volume',
+#         'close_time', 'quote_volume', 'trades', 
+#         'taker_buy_base', 'taker_buy_quote', 'ignore'
+#     ])
+#     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+#     df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+#     return df.set_index('timestamp')[['open', 'high', 'low', 'close', 'volume']]
+
+def get_btc_data(years=3, extra_days=26, interval='4h'):
+    """
+    获取Binance BTC/USDT数据（自动分页版）
+    参数:
+        years: 获取数据的年数
+        extra_days: 额外天数
+        interval: K线间隔（默认4小时）
+    """
+    # 计算时间范围
     end_time = datetime.now()
     start_time = end_time - timedelta(days=365 * years + extra_days)
     
-    url = "https://api.binance.com/api/v3/klines"
-    params = {
-        'symbol': 'BTCUSDT',
-        'interval': '4h',
-        'startTime': int(start_time.timestamp() * 1000),
-        'endTime': int(end_time.timestamp() * 1000),
-        'limit': 6000 + extra_days
-    }
+    # 计算总需要的数据量（按4小时K线估算）
+    total_hours = (end_time - start_time).total_seconds() / 3600
+    total_candles = math.ceil(total_hours / {'1h':1, '4h':4, '1d':24}[interval])
     
-    response = requests.get(url, params=params)
-    data = response.json()
+    print(f"需要获取的总K线数量: {total_candles}")
     
-    df = pd.DataFrame(data, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_volume', 'trades', 
-        'taker_buy_base', 'taker_buy_quote', 'ignore'
-    ])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
-    return df.set_index('timestamp')[['open', 'high', 'low', 'close', 'volume']]
-
+    # 计算需要分几页
+    page_size = 1000  # Binance单次最大限制
+    pages = math.ceil(total_candles / page_size)
+    print(f"需要分 {pages} 页获取")
+    
+    all_data = []
+    
+    for page in range(pages):
+        print(f"\n正在获取第 {page+1}/{pages} 页...")
+        
+        # 计算当前页的时间范围
+        page_start = start_time + timedelta(
+            hours=page * page_size * {'1h':1, '4h':4, '1d':24}[interval]
+        )
+        page_end = min(
+            page_start + timedelta(hours=(page_size-1) * {'1h':1, '4h':4, '1d':24}[interval]),
+            end_time
+        )
+        
+        print(f"时间范围: {page_start} 到 {page_end}")
+        
+        # 构建请求参数
+        params = {
+            'symbol': 'BTCUSDT',
+            'interval': interval,
+            'startTime': int(page_start.timestamp() * 1000),
+            'endTime': int(page_end.timestamp() * 1000),
+            'limit': page_size
+        }
+        
+        # 发送请求
+        try:
+            response = requests.get("https://api.binance.com/api/v3/klines", params=params)
+            data = response.json()
+            print(f"获取到 {len(data)} 条数据")
+            
+            # 转换为DataFrame
+            df = pd.DataFrame(data, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_volume', 'trades', 
+                'taker_buy_base', 'taker_buy_quote', 'ignore'
+            ])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+            
+            # 添加到总数据
+            all_data.append(df[['timestamp', 'open', 'high', 'low', 'close', 'volume']])
+            
+        except Exception as e:
+            print(f"获取第 {page+1} 页失败: {str(e)}")
+            continue
+    
+    # 合并所有数据
+    if all_data:
+        final_df = pd.concat(all_data).drop_duplicates('timestamp')
+        final_df = final_df.set_index('timestamp').sort_index()
+        print(f"\n最终获取数据量: {len(final_df)} 条")
+        print(f"时间范围: {final_df.index[0]} 到 {final_df.index[-1]}")
+        return final_df
+    else:
+        print("未能获取任何数据")
+        return pd.DataFrame()
+    
 # 计算 MACD 和金叉/死叉
 def calculate_macd(df):
     # 使用 ta 库计算 MACD
@@ -92,296 +175,7 @@ def print_crosses():
     plt.tight_layout()
     plt.show()
 
-# print_crosses()
-
-# def backtest(df, risk_reward_ratio=2):
-    df['position'] = 0          # 0=空仓, 1=多单, -1=空单
-    df['entry_price'] = 0.0     # 入场价格
-    df['stop_loss'] = 0.0       # 止损价
-    df['take_profit'] = 0.0     # 止盈价
-    df['pnl'] = 0.0             # 盈亏百分比
-    df['exit_type'] = None      # 新增：标记平仓类型
-    
-    for i in range(26, len(df)):
-        # 金叉做多
-        if df['golden_cross'].iloc[i]:
-            df['position'].iloc[i] = 1
-            entry = df['close'].iloc[i]
-            df['entry_price'].iloc[i] = entry
-            df['stop_loss'].iloc[i] = entry * 0.99  # 止损1%
-            df['take_profit'].iloc[i] = entry * 1.02  # 止盈2%
-        
-        # 死叉做空
-        elif df['death_cross'].iloc[i]:
-            df['position'].iloc[i] = -1
-            entry = df['close'].iloc[i]
-            df['entry_price'].iloc[i] = entry
-            df['stop_loss'].iloc[i] = entry * 1.01  # 止损1%
-            df['take_profit'].iloc[i] = entry * 0.98  # 止盈2%
-        
-        # 检查平仓条件
-        if df['position'].iloc[i-1] != 0:
-            current_low = df['low'].iloc[i]
-            current_high = df['high'].iloc[i]
-            
-            # 多单平仓逻辑
-            if df['position'].iloc[i-1] == 1:
-                if current_low <= df['stop_loss'].iloc[i-1]:
-                    df['pnl'].iloc[i] = -0.01
-                    df['exit_type'].iloc[i] = 'stop_loss'  # 标记止损
-                elif current_high >= df['take_profit'].iloc[i-1]:
-                    df['pnl'].iloc[i] = 0.02
-                    df['exit_type'].iloc[i] = 'take_profit'  # 标记止盈
-            
-            # 空单平仓逻辑
-            elif df['position'].iloc[i-1] == -1:
-                if current_high >= df['stop_loss'].iloc[i-1]:
-                    df['pnl'].iloc[i] = -0.01
-                    df['exit_type'].iloc[i] = 'stop_loss'
-                elif current_low <= df['take_profit'].iloc[i-1]:
-                    df['pnl'].iloc[i] = 0.02
-                    df['exit_type'].iloc[i] = 'take_profit'
-    
-    return df
-
-# def backtest(df):
-    df['position'] = 0
-    df['entry_price'] = 0.0
-    df['stop_loss'] = 0.0
-    df['take_profit'] = 0.0
-    df['pnl'] = 0.0
-    df['exit_type'] = None
-
-    for i in range(26, len(df)):
-        # 修复：确保在信号触发时记录当前K线的收盘价
-        if df['golden_cross'].iloc[i]:
-            df['position'].iloc[i] = 1
-            df['entry_price'].iloc[i] = df['close'].iloc[i]  # 用当前K线收盘价入场
-            df['stop_loss'].iloc[i] = df['close'].iloc[i] * 0.99
-            df['take_profit'].iloc[i] = df['close'].iloc[i] * 1.02
-
-        elif df['death_cross'].iloc[i]:
-            df['position'].iloc[i] = -1
-            df['entry_price'].iloc[i] = df['close'].iloc[i]  # 用当前K线收盘价入场
-            df['stop_loss'].iloc[i] = df['close'].iloc[i] * 1.01
-            df['take_profit'].iloc[i] = df['close'].iloc[i] * 0.98
-
-        # 平仓逻辑保持不变
-        if df['position'].iloc[i-1] != 0:
-            current_low = df['low'].iloc[i]
-            current_high = df['high'].iloc[i]
-            entry = df['entry_price'].iloc[i-1]  # 使用前一根K线的入场价
-
-            if df['position'].iloc[i-1] == 1:  # 多单
-                if current_low <= df['stop_loss'].iloc[i-1]:
-                    df['pnl'].iloc[i] = -0.01
-                    df['exit_type'].iloc[i] = 'stop_loss'
-                elif current_high >= df['take_profit'].iloc[i-1]:
-                    df['pnl'].iloc[i] = 0.02
-                    df['exit_type'].iloc[i] = 'take_profit'
-
-            elif df['position'].iloc[i-1] == -1:  # 空单
-                if current_high >= df['stop_loss'].iloc[i-1]:
-                    df['pnl'].iloc[i] = -0.01
-                    df['exit_type'].iloc[i] = 'stop_loss'
-                elif current_low <= df['take_profit'].iloc[i-1]:
-                    df['pnl'].iloc[i] = 0.02
-                    df['exit_type'].iloc[i] = 'take_profit'
-    return df
-
-# def analyze_results(df):
-    trades = df[df['pnl'] != 0].copy()
-    
-    # 分类统计
-    stop_loss_trades = trades[trades['exit_type'] == 'stop_loss']
-    take_profit_trades = trades[trades['exit_type'] == 'take_profit']
-    
-    # 基础统计
-    win_rate = len(take_profit_trades) / len(trades) if len(trades) > 0 else 0
-    avg_win = take_profit_trades['pnl'].mean()
-    avg_loss = stop_loss_trades['pnl'].mean()
-    
-    # 输出详细结果
-    print("\n=== 回测结果 ===")
-    print(f"总交易次数: {len(trades)}")
-    print(f"止损次数: {len(stop_loss_trades)}")
-    print(f"止盈次数: {len(take_profit_trades)}")
-    print(f"胜率: {win_rate:.2%}")
-    print(f"平均盈利: {avg_win:.2%}, 平均亏损: {avg_loss:.2%}")
-    print(f"盈亏比: {-avg_win/avg_loss:.2f}" if avg_loss !=0 else "N/A")
-    
-    # 打印最近5次交易的平仓详情
-    print("\n=== 最近5次交易详情 ===")
-    for idx, row in trades.tail(5).iterrows():
-        direction = "多单" if row['position'] == 1 else "空单"
-        print(
-            f"{idx.strftime('%Y-%m-%d %H:%M')} | {direction} | "
-            f"入场价: {row['entry_price']:.2f} | "
-            f"结果: {'止盈' if row['exit_type'] == 'take_profit' else '止损'} | "
-            f"盈亏: {row['pnl']*100:.2f}%"
-        )
-
-# def run_backtest(data):
-    trades = []
-    position = None
-    entry_price = 0
-    stop_loss = 0
-    take_profit = 0
-    
-    for i, row in data.iterrows():
-        # 开仓逻辑
-        if position is None:
-            if row['golden_cross']:
-                position = 'long'
-                entry_price = row['close']
-                stop_loss = entry_price * 0.99  # 1%止损
-                take_profit = entry_price * 1.02  # 2%止盈
-                trades.append({
-                    'entry_time': i,
-                    'position': position,
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit
-                })
-            elif row['death_cross']:
-                position = 'short'
-                entry_price = row['close']
-                stop_loss = entry_price * 1.01  # 1%止损
-                take_profit = entry_price * 0.98  # 2%止盈
-                trades.append({
-                    'entry_time': i,
-                    'position': position,
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit
-                })
-        
-        # 平仓逻辑
-        elif position == 'long':
-            if row['low'] <= stop_loss:
-                trades[-1].update({
-                    'exit_time': i,
-                    'exit_price': stop_loss,
-                    'exit_type': 'stop_loss',
-                    'pnl': (stop_loss - entry_price)/entry_price
-                })
-                position = None
-            elif row['high'] >= take_profit:
-                trades[-1].update({
-                    'exit_time': i,
-                    'exit_price': take_profit,
-                    'exit_type': 'take_profit',
-                    'pnl': (take_profit - entry_price)/entry_price
-                })
-                position = None
-                
-        elif position == 'short':
-            if row['high'] >= stop_loss:
-                trades[-1].update({
-                    'exit_time': i,
-                    'exit_price': stop_loss,
-                    'exit_type': 'stop_loss',
-                    'pnl': (entry_price - stop_loss)/entry_price
-                })
-                position = None
-            elif row['low'] <= take_profit:
-                trades[-1].update({
-                    'exit_time': i,
-                    'exit_price': take_profit,
-                    'exit_type': 'take_profit',
-                    'pnl': (entry_price - take_profit)/entry_price
-                })
-                position = None
-    
-    return pd.DataFrame(trades)
-
-# ========================
-# 分析结果
-# ========================
-# def analyze_results(trades):
-    if trades.empty:
-        print("没有交易发生")
-        return
-    
-    # 基础统计
-    total_trades = len(trades)
-    winning_trades = trades[trades['pnl'] > 0]
-    losing_trades = trades[trades['pnl'] <= 0]
-    
-    print("\n" + "="*50)
-    print("回测结果汇总")
-    print("="*50)
-    print(f"总交易次数: {total_trades}")
-    print(f"盈利交易: {len(winning_trades)} ({len(winning_trades)/total_trades:.1%})")
-    print(f"亏损交易: {len(losing_trades)} ({len(losing_trades)/total_trades:.1%})")
-    print(f"平均盈利: {winning_trades['pnl'].mean():.2%}")
-    print(f"平均亏损: {losing_trades['pnl'].mean():.2%}")
-    print(f"盈亏比: {-winning_trades['pnl'].mean()/losing_trades['pnl'].mean():.2f}")
-    print(f"累计收益率: {trades['pnl'].sum():.2%}")
-    
-    # 最近5笔交易详情
-    print("\n最近5笔交易详情:")
-    print(trades[['entry_time', 'position', 'entry_price', 
-                 'exit_price', 'exit_type', 'pnl']].tail(5).to_string())
-    
-    # 保存完整交易记录
-    trades.to_csv('trade_log.csv', index=False)
-    print("\n完整交易记录已保存到 trade_log.csv")
-
-# ========================
-# 可视化
-# ========================
-# def visualize(data, trades):
-    plt.figure(figsize=(16, 12))
-    
-    # 价格图表
-    ax1 = plt.subplot(211)
-    data['close'].plot(ax=ax1, color='black', alpha=0.8, label='Price')
-    
-    # 标记交易信号
-    long_entries = data[data['golden_cross']]
-    short_entries = data[data['death_cross']]
-    ax1.scatter(long_entries.index, long_entries['close'], 
-               color='green', marker='^', s=100, label='Long Entry')
-    ax1.scatter(short_entries.index, short_entries['close'],
-               color='red', marker='v', s=100, label='Short Entry')
-    
-    # 标记平仓点
-    for _, trade in trades.iterrows():
-        color = 'darkgreen' if trade['pnl'] > 0 else 'darkred'
-        marker = '*' if trade['exit_type'] == 'take_profit' else 'x'
-        ax1.scatter(trade['exit_time'], trade['exit_price'],
-                   color=color, marker=marker, s=150, 
-                   label=f"{'Win' if trade['pnl']>0 else 'Loss'} {trade['exit_type']}")
-    
-    ax1.set_title('Price and Trades')
-    ax1.legend()
-    
-    # MACD图表
-    ax2 = plt.subplot(212, sharex=ax1)
-    data['macd'].plot(ax=ax2, color='blue', label='MACD')
-    data['signal'].plot(ax=ax2, color='orange', label='Signal')
-    ax2.bar(data.index, data['hist'], 
-           color=data['hist'].apply(lambda x: 'green' if x>0 else 'red'),
-           alpha=0.3)
-    ax2.axhline(0, color='gray', linestyle='--')
-    ax2.set_title('MACD (12,26,9)')
-    ax2.legend()
-    
-    # 设置X轴格式
-    ax2.xaxis.set_major_locator(mdates.DayLocator(interval=3))
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-    plt.xticks(rotation=45)
-    
-    plt.tight_layout()
-    plt.savefig('backtest_result.png')
-    print("\n图表已保存为 backtest_result.png")
-
-
-# ========================
-# 回测引擎
-# ========================
-def run_backtest(df):
+def macd_backtest(df):
     trades = []
     position = None  # None, 'long', or 'short'
     entry_price = 0
@@ -603,7 +397,8 @@ def visualize_results(df, trades):
 # ========================
 # 主程序
 # ========================
-if __name__ == "__main__":
+
+def macd():
     print("获取数据中...")
     btc_data = get_btc_data(years=5)
     
@@ -611,10 +406,240 @@ if __name__ == "__main__":
     btc_data = calculate_macd(btc_data)
     
     print("运行回测...")
-    trades_df = run_backtest(btc_data)
+    trades_df = macd_backtest(btc_data)
     
     print("分析结果...")
     analyze_results(trades_df)
     
     print("生成可视化图表...")
     visualize_results(btc_data, trades_df)
+
+# ============= RSI交易策略 =============
+def rsi_strategy(data, overbought=70, oversold=30, risk_reward=2):
+    signals = []
+    position = None
+    entry_price = None
+    stop_loss = None
+    take_profit = None
+    
+    for i in range(len(data)):
+        current_rsi = data['rsi'].iloc[i]
+        current_price = data['close'].iloc[i]
+        
+        # 超卖信号 - 做多
+        if current_rsi < oversold and position != 'long':
+            if position == 'short':
+                # 平空仓
+                pnl = entry_price - current_price
+                signals.append(('short_exit', data.index[i], current_price, pnl))
+            
+            # 开多仓
+            position = 'long'
+            entry_price = current_price
+            stop_loss = entry_price * 0.99  # 1%止损
+            take_profit = entry_price * 1.02  # 2%止盈（盈亏比2:1）
+            signals.append(('long_entry', data.index[i], current_price, None))
+        
+        # 超买信号 - 做空
+        elif current_rsi > overbought and position != 'short':
+            if position == 'long':
+                # 平多仓
+                pnl = current_price - entry_price
+                signals.append(('long_exit', data.index[i], current_price, pnl))
+            
+            # 开空仓
+            position = 'short'
+            entry_price = current_price
+            stop_loss = entry_price * 1.01  # 1%止损
+            take_profit = entry_price * 0.98  # 2%止盈（盈亏比2:1）
+            signals.append(('short_entry', data.index[i], current_price, None))
+        
+        # 检查止损止盈
+        if position == 'long':
+            if current_price <= stop_loss or current_price >= take_profit:
+                pnl = current_price - entry_price
+                signals.append(('long_exit', data.index[i], current_price, pnl))
+                position = None
+        elif position == 'short':
+            if current_price >= stop_loss or current_price <= take_profit:
+                pnl = entry_price - current_price
+                signals.append(('short_exit', data.index[i], current_price, pnl))
+                position = None
+    
+    return pd.DataFrame(signals, columns=['action', 'time', 'price', 'pnl'])
+
+# ============= 绩效分析 =============
+def analyze_performance(trades):
+    # 过滤出平仓交易
+    closed_trades = trades[trades['action'].str.contains('exit')]
+    
+    # 基础统计
+    total_trades = len(closed_trades)
+    winning_trades = len(closed_trades[closed_trades['pnl'] > 0])
+    win_rate = winning_trades / total_trades * 100
+    total_pnl = closed_trades['pnl'].sum()
+    avg_pnl = closed_trades['pnl'].mean()
+    
+    print("\n========== 策略绩效 ==========")
+    print(f"总交易次数: {total_trades}")
+    print(f"盈利次数: {winning_trades} (胜率: {win_rate:.1f}%)")
+    print(f"总盈亏: {total_pnl:.2f} USDT")
+    print(f"平均每笔盈亏: {avg_pnl:.2f} USDT")
+    trades.to_csv('rsibacktest_results.csv', index=False)
+    print("\n交易记录已保存到 rsibacktest_results.csv")
+    
+    return closed_trades
+
+def time_to_index(data, time_series):
+    return [data.index.get_loc(t) for t in time_series]
+
+# def plot_rsi_signals(data, trades):
+#     plt.figure(figsize=(16, 14))
+    
+#     # ===== 1. 价格图表 =====
+#     ax1 = plt.subplot(211)
+#     ax1.plot(data.index, data['close'], color='black', linewidth=1.5, label='BTC Price')
+    
+#     # 标记买卖信号（价格图）
+#     long_entries = trades[trades['action'] == 'long_entry']
+#     short_entries = trades[trades['action'] == 'short_entry']
+#     exits = trades[trades['action'].str.contains('exit')]
+    
+#     # 入场信号（价格图）
+#     ax1.scatter(long_entries['time'], long_entries['price'], 
+#                color='limegreen', marker='^', s=120, label='Long Entry (RSI<30)', zorder=5)
+#     ax1.scatter(short_entries['time'], short_entries['price'],
+#                color='red', marker='v', s=120, label='Short Entry (RSI>70)', zorder=5)
+    
+#     # 平仓信号（价格图，区分盈亏）
+#     for _, trade in exits.iterrows():
+#         color = 'darkgreen' if trade['pnl'] > 0 else 'maroon'
+#         marker = '*' if trade['pnl'] > 0 else 'x'
+#         label = 'Profit Exit' if trade['pnl'] > 0 else 'Loss Exit'
+#         ax1.scatter(trade['time'], trade['price'], color=color, marker=marker,
+#                    s=150, label=label, zorder=5)
+    
+#     ax1.set_title('BTC Price with RSI Trading Signals', fontsize=14, pad=20)
+#     ax1.set_ylabel('Price (USDT)', fontsize=12)
+#     ax1.legend(loc='upper left')
+#     ax1.grid(True, linestyle='--', alpha=0.3)
+
+#     ax1.xaxis.set_major_locator(mdates.DayLocator(interval=3))
+#     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+#     plt.xticks(rotation=45)
+    
+#     # ===== 2. RSI图表 =====
+#     ax2 = plt.subplot(212, sharex=ax1)
+#     ax2.plot(data.index, data['rsi'], color='purple', linewidth=1.5, label='RSI (14)')
+    
+#     # 标记RSI信号时，使用索引位置而非时间戳
+#     ax2.scatter(
+#         time_to_index(data, long_entries['time']),  # x坐标：数据中的索引位置
+#         data.loc[long_entries['time'], 'rsi'],     # y坐标：对应的RSI值
+#         color='limegreen', marker='^', s=80, label='Long Signal', zorder=5
+#     )
+#     ax2.scatter(
+#         time_to_index(data, short_entries['time']),
+#         data.loc[short_entries['time'], 'rsi'],
+#         color='red', marker='v', s=80, label='Short Signal', zorder=5
+# )
+    
+#     # 超买/超卖区域
+#     ax2.axhline(70, color='red', linestyle='--', alpha=0.7, label='Overbought (70)')
+#     ax2.axhline(30, color='green', linestyle='--', alpha=0.7, label='Oversold (30)')
+#     ax2.fill_between(data.index, 70, 100, color='red', alpha=0.1)
+#     ax2.fill_between(data.index, 0, 30, color='green', alpha=0.1)
+    
+#     ax2.set_title('RSI (14) with Signal Markers', fontsize=14, pad=20)
+#     ax2.set_ylabel('RSI', fontsize=12)
+#     ax2.set_ylim(0, 100)
+#     ax2.legend(loc='upper left')
+#     ax2.grid(True, linestyle='--', alpha=0.3)
+    
+#     # ===== 3. 统一调整 =====
+#     # X轴格式（间隔3天）
+#     ax2.xaxis.set_major_locator(mdates.DayLocator(interval=3))
+#     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+#     plt.xticks(rotation=45)
+    
+#     # 去重图例
+#     handles, labels = plt.gca().get_legend_handles_labels()
+#     by_label = dict(zip(labels, handles))
+#     ax1.legend(by_label.values(), by_label.keys(), loc='upper left')
+#     ax2.legend(by_label.values(), by_label.keys(), loc='upper left')
+    
+#     plt.tight_layout()
+#     plt.savefig('rsi_signals_marked.png', dpi=300, bbox_inches='tight')
+#     print("图表已保存为 rsi_signals_marked.png")
+#     plt.show()
+def plot_rsi_signals(data, trades):
+    plt.figure(figsize=(16, 14))
+    
+    # ===== 1. 价格图表 =====
+    ax1 = plt.subplot(211)
+    ax1.plot(data.index, data['close'], color='black', linewidth=1.5, label='BTC Price')
+    
+    # 标记买卖信号（价格图）
+    long_entries = trades[trades['action'] == 'long_entry']
+    short_entries = trades[trades['action'] == 'short_entry']
+    exits = trades[trades['action'].str.contains('exit')]
+
+    # 入场信号（统一label）
+    ax1.scatter(long_entries['time'], long_entries['price'], 
+               color='limegreen', marker='^', s=120, label='Long Entry', zorder=5)
+    ax1.scatter(short_entries['time'], short_entries['price'],
+               color='red', marker='v', s=120, label='Short Entry', zorder=5)
+
+    # 平仓信号（不添加label）
+    for _, trade in exits.iterrows():
+        color = 'darkgreen' if trade['pnl'] > 0 else 'maroon'
+        marker = '*' if trade['pnl'] > 0 else 'x'
+        ax1.scatter(trade['time'], trade['price'], color=color, marker=marker,
+                   s=150, zorder=5, label=None)
+
+    # ===== 2. RSI图表 =====
+    ax2 = plt.subplot(212, sharex=ax1)
+    ax2.plot(data.index, data['rsi'], color='purple', linewidth=1.5, label='RSI (14)')
+
+    # 标记买卖信号（RSI图，统一label）
+    ax2.scatter(
+        long_entries['time'], data.loc[long_entries['time'], 'rsi'],
+        color='limegreen', marker='^', s=80, label='Long Signal', zorder=5
+    )
+    ax2.scatter(
+        short_entries['time'], data.loc[short_entries['time'], 'rsi'],
+        color='red', marker='v', s=80, label='Short Signal', zorder=5
+    )
+
+    # 阈值线和填充区域（不添加label）
+    ax2.axhline(70, color='red', linestyle='--', alpha=0.7, label=None)
+    ax2.axhline(30, color='green', linestyle='--', alpha=0.7, label=None)
+    ax2.fill_between(data.index, 70, 100, color='red', alpha=0.1, label=None)
+    ax2.fill_between(data.index, 0, 30, color='green', alpha=0.1, label=None)
+
+    # 手动控制图例（避免重复）
+    handles, labels = [], []
+    for ax in [ax1, ax2]:
+        h, l = ax.get_legend_handles_labels()
+        handles.extend(h)
+        labels.extend(l)
+    by_label = dict(zip(labels, handles))  # 去重
+    ax1.legend(by_label.values(), by_label.keys(), loc='upper left')
+    ax2.legend(by_label.values(), by_label.keys(), loc='upper left')
+
+    plt.tight_layout()
+    plt.savefig('rsi_signals_fixed.png', dpi=300)
+    plt.show()
+def rsi():
+    btc_data = get_btc_data(years=5)
+    btc_data['rsi'] = ta.momentum.rsi(btc_data['close'], window=14)
+    
+    # 运行策略
+    trades = rsi_strategy(btc_data)
+    performance = analyze_performance(trades)
+    plot_rsi_signals(btc_data, trades)
+if __name__ == "__main__":
+    macd()
+    # rsi()
+    # btc = get_btc_data(years=3)
+    # print(len(btc))
