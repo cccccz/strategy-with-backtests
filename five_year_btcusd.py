@@ -664,6 +664,63 @@ def detect_divergence(df, order=5, lookback=20,ref_idx='macd'):
 
     return df
 
+def detect_divergence_no_lookahead(df, order=5, lookback=20, ref_idx='macd'):
+    """
+    安全版：无未来函数的顶/底背离检测（延迟确认极值点）
+    """
+    df = df.copy()
+
+    # 初始化列
+    df['price_local_max'] = np.nan
+    df['price_local_min'] = np.nan
+    df['macd_local_max'] = np.nan
+    df['macd_local_min'] = np.nan
+    df['top_divergence'] = False
+    df['bottom_divergence'] = False
+
+    # ========== 1. 延迟确认极值 ==========
+    price_max_idx = argrelextrema(df['close'].values, np.greater_equal, order=order)[0]
+    price_min_idx = argrelextrema(df['close'].values, np.less_equal, order=order)[0]
+    macd_max_idx = argrelextrema(df[ref_idx].values, np.greater_equal, order=order)[0]
+    macd_min_idx = argrelextrema(df[ref_idx].values, np.less_equal, order=order)[0]
+
+    # 回填信号到未来第 order 根K线
+    for idx in price_max_idx:
+        if idx + order < len(df):
+            df.loc[df.index[idx + order], 'price_local_max'] = df['close'].iloc[idx]
+
+    for idx in price_min_idx:
+        if idx + order < len(df):
+            df.loc[df.index[idx + order], 'price_local_min'] = df['close'].iloc[idx]
+
+    for idx in macd_max_idx:
+        if idx + order < len(df):
+            df.loc[df.index[idx + order], 'macd_local_max'] = df[ref_idx].iloc[idx]
+
+    for idx in macd_min_idx:
+        if idx + order < len(df):
+            df.loc[df.index[idx + order], 'macd_local_min'] = df[ref_idx].iloc[idx]
+
+    # ========== 2. 检测背离 ==========
+    for i in range(lookback + order, len(df)):
+        # 顶背离：价格创新高 + MACD 走低
+        recent_price_max = df['price_local_max'].iloc[i - lookback:i].dropna()
+        recent_macd_max = df['macd_local_max'].iloc[i - lookback:i].dropna()
+        if len(recent_price_max) >= 2 and len(recent_macd_max) >= 2:
+            if recent_price_max.iloc[-1] > recent_price_max.iloc[-2] and \
+               recent_macd_max.iloc[-1] < recent_macd_max.iloc[-2]:
+                df.at[df.index[i], 'top_divergence'] = True
+
+        # 底背离：价格创新低 + MACD 走高
+        recent_price_min = df['price_local_min'].iloc[i - lookback:i].dropna()
+        recent_macd_min = df['macd_local_min'].iloc[i - lookback:i].dropna()
+        if len(recent_price_min) >= 2 and len(recent_macd_min) >= 2:
+            if recent_price_min.iloc[-1] < recent_price_min.iloc[-2] and \
+               recent_macd_min.iloc[-1] > recent_macd_min.iloc[-2]:
+                df.at[df.index[i], 'bottom_divergence'] = True
+
+    return df
+
 import matplotlib.pyplot as plt
 
 def extrema_divergence_check(df, order=5, lookback=20):
@@ -879,13 +936,16 @@ def plot_divergence_signals(df, trades=None, title="Divergence Signals & Trades"
     plt.savefig(filename, dpi=300)
     plt.show()
 
+def combined_strategy():
+    return
+
 
 if __name__ == "__main__":
     # macd()
     # rsi()
     btc = get_btc_data(years=5)
     btc = calculate_macd(btc)
-    btc = detect_divergence(btc)
+    btc = detect_divergence_no_lookahead(btc)
     trades = divergence_backtest(btc)
     analyze_results_divergence(trades)
     plot_divergence_signals(btc,trades=trades)
