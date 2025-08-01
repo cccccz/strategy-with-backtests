@@ -366,11 +366,6 @@ def stage_test():
     print(btc_future.tail(10))
     print(btc_merged.tail(10))
 
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
-from datetime import datetime
-
 def plot_stage_data(backtester, stage='all', figsize=(15, 10), save_path=None):
     """
     Comprehensive plotting function for stage-by-stage data verification
