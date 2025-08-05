@@ -74,12 +74,12 @@ async def bybit_ws():
             msg = await ws.recv()
             envelope = json.loads(msg)
             payload = envelope.get('data', {})
-            symbol = payload.get('s')
-            bid = payload.get('b')
-            ask = payload.get('a')
+            symbol = payload.get('symbol')
+            bid = payload.get('bid1Price')
+            ask = payload.get('ask1Price')
             if symbol in shared_data:
-                shared_data["Bybit"]["Bybit"]["bid"] = bid
-                shared_data["Bybit"]["Bybit"]["ask"] = ask
+                shared_data[symbol]["Bybit"]["bid"] = bid
+                shared_data[symbol]["Bybit"]["ask"] = ask
                 # print(f"[Bybit]   BTCUSDT: bid={bid} ask={ask}")
 
 # -------- Bitget --------
