@@ -1,6 +1,9 @@
 import requests
 import pandas as pd
+import functools
 from functools import reduce
+import time
+import logging
 
 def fetch_all_symbols(exchange, market_type="spot"):
     """获取交易所支持的所有交易对（现货或合约）"""
@@ -146,6 +149,27 @@ def get_common_symbols():
         name_lists.append(symbols_list)
     common_symbols = set(reduce(lambda x, y:set(x) & set(y), name_lists))
     return list(common_symbols)
+
+def timeit(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        duration = (time.perf_counter() - start) * 1000  # ms
+        logger.info(f"[TimeIt] {func.__name__} took {duration:.3f} ms")
+        return result
+    return wrapper
+
+def async_timeit(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = await func(*args, **kwargs)
+        duration = (time.perf_counter() - start) * 1000  # ms
+        logger.info(f"[AsyncTimeIt] {func.__name__} took {duration:.3f} ms")
+        return result
+    return wrapper
+
 
 if __name__ == '__main__':
 

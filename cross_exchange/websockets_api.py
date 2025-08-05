@@ -1,11 +1,13 @@
 import asyncio
+import functools
 import json
+from numpy import copy
 import websockets
 import os
 import time
 from rest_api import get_common_symbols
 import pandas as pd
-
+from utils import async_timeit, timeit, log_duration
 # initialize shared_data
 exchanges = ['Binance', 'OKX', 'Bitget', 'Bybit']
 symbols = get_common_symbols()
@@ -14,6 +16,10 @@ okx_symbols = [symbol.replace('USDT','-USDT').replace('USDT','USDT-SWAP') for sy
 shared_data = {
     symbol:{exchange:{"bid":None,"ask":None}for exchange in exchanges}for symbol in symbols
 }
+
+# initialize lock for thread safety
+lock = asyncio.Lock() 
+
 
 # -------- Terminal 清屏函数 --------
 def clear_terminal():
@@ -78,7 +84,7 @@ async def bybit_ws():
         while True:
             msg = await ws.recv()
             envelope = json.loads(msg)
-            payload = envelope.get('data', {})
+            payload = envelope['data']
             symbol = payload.get('symbol')
             bid = payload.get('bid1Price')
             ask = payload.get('ask1Price')
@@ -86,6 +92,45 @@ async def bybit_ws():
                 shared_data[symbol]["Bybit"]["bid"] = bid
                 shared_data[symbol]["Bybit"]["ask"] = ask
                 # print(f"[Bybit]   BTCUSDT: bid={bid} ask={ask}")
+
+# -------- Corrected Bybit WebSocket --------
+async def bybit_ws():
+    uri = "wss://stream.bybit.com/v5/public/linear"
+    async with websockets.connect(uri) as ws:
+        params = [f"tickers.{symbol}" for symbol in symbols]
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": params
+        }
+        await ws.send(json.dumps(subscribe_msg))
+
+        while True:
+            try:
+                msg = await ws.recv()
+                envelope = json.loads(msg)
+                               
+                # Check if this is a ticker data message
+                if 'data' in envelope and envelope.get('topic', '').startswith('tickers.'):
+                    payload = envelope['data']
+                    
+                    symbol = payload.get('symbol')
+                    bid = payload.get('bid1Price') 
+                    ask = payload.get('ask1Price')  
+                    
+                    if symbol and bid and ask and symbol in shared_data:
+                        if 'bid1Price' in payload:
+                            shared_data[symbol]["Bybit"]["bid"] = bid
+                        if 'ask1Price' in payload:
+                            shared_data[symbol]["Bybit"]["ask"] = ask
+                        # print(f"[Bybit] {symbol}: bid={bid} ask={ask}")
+                    # else:
+                    #     # Debug missing data
+                    #     print(f"[Bybit DEBUG] Symbol: {symbol}, bid1Price: {bid}, ask1Price: {ask}")
+                    #     print(f"[Bybit DEBUG] Available fields: {list(payload.keys())}")
+                        
+            except Exception as e:
+                print(f"[Bybit ERROR] {e}")
+                await asyncio.sleep(1)
 
 # -------- Bitget --------
 async def bitget_ws():
@@ -141,14 +186,52 @@ async def okx_ws():
                     shared_data[symbol]["OKX"]["ask"] = ask
                 # print(f"[OKX]     BTC-USDT: bid={bid} ask={ask}")
 
+async def compute_strategy():
+    while True:
+        async with lock:  # to safely copy shared_data
+            snapshot = copy.deepcopy(shared_data)
+
+        for symbol, exchange_data in snapshot.items():
+            quotes = []
+            for exchange, data in exchange_data.items():
+                bid, ask = data['bid'], data['ask']
+                if bid and ask:
+                    quotes.append((exchange, float(bid), float(ask)))
+
+            if len(quotes) < 2:
+                continue
+
+            best_buy = min(quotes, key=lambda x: x[2])  # ask
+            best_sell = max(quotes, key=lambda x: x[1])  # bid
+
+            spread = best_sell[1] - best_buy[2]
+            profit_pct = spread / best_buy[2]
+
+            cost_pct = estimate_cost(best_buy[0], best_sell[0], symbol)
+
+            if profit_pct > cost_pct:
+                print(f"[ARBITRAGE] {symbol}: Buy on {best_buy[0]} @ {best_buy[2]}, "
+                      f"Sell on {best_sell[0]} @ {best_sell[1]} "
+                      f"=> Profit: {profit_pct:.4%} > Cost: {cost_pct:.4%}")
+                # simulate_trade(...)
+        await asyncio.sleep(1)
+
+def estimate_cost():
+    return 0
+
+async def execute_simulation():
+    print('making money')
+
 # -------- 主程序，聚合运行 --------
 async def main():
     await asyncio.gather(
         binance_ws(),
-        bybit_ws(),
         bitget_ws(),
         okx_ws(),
-        display_terminal()
+        bybit_ws(),
+        display_terminal(),
+        compute_strategy(),
+        execute_simulation(),
     )
 
 if __name__ == '__main__':  
