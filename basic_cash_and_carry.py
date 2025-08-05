@@ -9,11 +9,15 @@ import math
 import time
 from typing import Dict, List, Tuple, Optional
 import warnings
+import os
+import json
+from pathlib import Path
 warnings.filterwarnings('ignore')
 
 
 # 定义成本变量（后续可调整）
-TRANSACTION_FEE = 0.001 # 单边手续费0.1%
+SPOT_TRANSACTION_RATE = 0.001
+FUTURE_TRANSACTION_RATE = 0.0005
 FINANCING_RATE = 0  # 资金成本（每日）
 HOLDING_DAYS = 30        # 预估持有天数
 MIN_PROFIT_PCT = 0
@@ -704,8 +708,9 @@ def check_dates():
     backtester = BinanceArbitrageBacktester(symbol='BTCUSDT', interval='4h')
     
     # 1. 获取数据并打印结构
-    print("正在获取现货数据...")
-    spot_data = backtester.get_spot_data(years=2, extra_days=0)
+    # print("正在获取现货数据...")
+    # spot_data = backtester.get_spot_data(years=2, extra_days=0)
+
     # print("现货数据列名:", spot_data.columns.tolist())
     # print("现货数据示例:\n", spot_data.head(2))
 
@@ -1257,8 +1262,8 @@ def calculate_returns(spot_data, futures_data, roll_schedule):
     """
     results = []
     cash_flows = {}
-    spot_transaction_rate = 0.001
-    future_transaction_rate = 0.0005
+    spot_transaction_rate = SPOT_TRANSACTION_RATE
+    future_transaction_rate = FUTURE_TRANSACTION_RATE
     
     for i, (open_time, close_time, contract) in enumerate(roll_schedule):
         spot_entry = spot_data.loc[open_time, 'spot_close']
@@ -1418,38 +1423,103 @@ def plot_results_enhanced(results_df, initial_nav=1.0):
     plt.savefig('btc_arbitrage_enhanced.png', dpi=300)
     plt.show()
 
-def basic_strategy():
-    # 1.在这个季度开始前（上一个季度末/上一个比特币季度合约交割日结束之前）：买比特币现货，做空这个季度的比特币季度合约。
-    # 2.在这个季度末（这个比特币季度合约交割日结束之前）：卖出比特币现货，平仓这个季度的比特币合约（完成交割？）｜买比特币，做空下一个季度的比特币季度合约...
-
-    # 参数， 交易手续费 基础用户： 现货 0.1% 合约  0.05%
-    # 资金费率，暂不考虑
-    # Initialize
-    backtester = BinanceArbitrageBacktester(symbol='BTCUSDT', interval='4h')
+def save_results(return_data, cash_flows, output_dir="results"):
+    """
+    Saves trade results to files instead of printing to console.
     
-    # 1. Get data
-    print("获取现货数据...")
-    spot_data = backtester.get_spot_data(years=2, extra_days=0)
-    print("获取期货数据...")
-    contracts = backtester.get_all_futures_data(start_date='2023-12-01')
-    futures_data = backtester.futures_data
-    # validate_contract_dates(futures_data,contracts)
+    Creates:
+    - results/trade_records.csv: Detailed trade records
+    - results/cash_flows.json: Complete cash flow data
+    - results/summary.txt: Human-readable summary
+    """
 
-    # 2. Generate trading signals with improved error handling
-    roll_dates = generate_roll_dates(futures_data,contracts)
-    print("交易日：")
-    print(roll_dates)
-    return_data, cash_flows = calculate_returns(spot_data,futures_data,roll_dates)
-    print("交易记录")
-    print_trade_summary(cash_flows)
-    print(return_data[['trade_id', 'contract', 'open_time', 'close_time',
-                    'spot_entry_price', 'future_entry_price',
-                    'net_return', 'annualized_return']])
     
-    # plot_results(return_data)
+    # Create output directory if needed
+    Path(output_dir).mkdir(exist_ok=True)
+    
+    # 1. Save trade records (return_data) to CSV
+    trade_cols = ['trade_id', 'contract', 'open_time', 'close_time',
+                 'spot_entry_price', 'future_entry_price',
+                 'net_return', 'annualized_return']
+    return_data[trade_cols].to_csv(f"{output_dir}/trade_records.csv", index=False)
+    
+    # 2. Save full cash flows to JSON (preserves structure)
+    with open(f"{output_dir}/cash_flows.json", 'w') as f:
+        json.dump(cash_flows, f, indent=2, default=str)
+    
+    # 3. Save human-readable summary to text file
+    with open(f"{output_dir}/summary.txt", 'w') as f:
+        f.write("TRADE SUMMARY\n")
+        f.write("="*50 + "\n")
+        for trade_id, data in cash_flows.items():
+            f.write(f"\n{trade_id}:\n")
+            f.write(f"Dates: {data['date']['open']} to {data['date']['close']}\n")
+            f.write(f"Spot: {data['positions']['open']['spot_price']} → {data['positions']['close']['spot_price']}\n")
+            f.write(f"Future: {data['positions']['open']['future_price']} → {data['positions']['close']['future_price']}\n")
+            f.write(f"Net P&L: ${data['cash']['net']:,.2f}\n")
+            f.write("-"*50 + "\n")
 
-    # plot_results_enhanced(return_data)
-    analyze_basic_strategy_results(return_data,cash_flows)
+def save_all_results(return_data, cash_flows, output_dir="results"):
+    """
+    Saves all trade results to a single structured file.
+    Creates:
+    - results/full_results.json: Contains all data including:
+        * trade_records (DataFrame contents)
+        * cash_flows (original structure)
+        * performance_metrics (analysis)
+    """
+    import os
+    import json
+    from pathlib import Path
+    
+    Path(output_dir).mkdir(exist_ok=True)
+    
+    # Convert DataFrame to dict
+    trade_records = return_data.to_dict('records')
+    
+    # Generate performance metrics
+    metrics = calculate_performance_metrics(return_data, cash_flows)
+    
+    # Combine everything
+    full_results = {
+        'metadata': {
+            'generated_at': pd.Timestamp.now().isoformat(),
+            'strategy': 'BTC Basis Trade'
+        },
+        'trade_records': trade_records,
+        'cash_flows': cash_flows,
+        'performance_metrics': metrics
+    }
+    
+    # Save to single file
+    with open(f"{output_dir}/full_results.json", 'w') as f:
+        json.dump(full_results, f, indent=2, default=str)
+    
+    print(f"All results saved to {output_dir}/full_results.json")
+
+def calculate_performance_metrics(return_data, cash_flows):
+    """Calculates metrics without printing"""
+    total_trades = len(return_data)
+    winning_trades = len(return_data[return_data['net_return'] > 0])
+    
+    return {
+        'total_trades': total_trades,
+        'win_rate': winning_trades / total_trades,
+        'total_net_profit': sum(trade['cash']['net'] for trade in cash_flows.values()),
+        'avg_profit': return_data[return_data['net_return'] > 0]['net_return'].mean(),
+        'max_profit': return_data[return_data['net_return'] > 0]['net_return'].max(),
+        'min_profit': return_data[return_data['net_return'] > 0]['net_return'].min(),
+        'max_loss': return_data[return_data['net_return'] <= 0]['net_return'].max(),
+        'min_loss': return_data[return_data['net_return'] <= 0]['net_return'].min(),
+
+        'avg_loss': return_data[return_data['net_return'] <= 0]['net_return'].mean(),
+        # 'profit_factor': abs(avg_profit / avg_loss) if avg_loss != 0 else float('inf'),
+        'max_drawdown': (return_data['net_return'].cumsum().min()),
+        # 'sharpe_ratio': (return_data['net_return'].mean() / return_data['net_return'].std()) * (252**0.5),
+        'avg_holding_days': return_data['holding_days'].mean()
+    }
+
+
 
 
 def analyze_basic_strategy_results(return_data, cash_flows):
@@ -1466,8 +1536,13 @@ def analyze_basic_strategy_results(return_data, cash_flows):
     total_net_profit = sum([trade['cash']['net'] for trade in cash_flows.values()])
     avg_profit = return_data[return_data['net_return'] > 0]['net_return'].mean()
     avg_loss = return_data[return_data['net_return'] <= 0]['net_return'].mean()
-    
-    # Calculate risk/reward
+    max_profit= return_data[return_data['net_return'] > 0]['net_return'].max()
+    min_profit= return_data[return_data['net_return'] > 0]['net_return'].min()
+    max_loss= return_data[return_data['net_return'] <= 0]['net_return'].max()
+    min_loss= return_data[return_data['net_return'] <= 0]['net_return'].min()
+
+
+# Calculate risk/reward
     profit_factor = -avg_profit / avg_loss if avg_loss != 0 else float('inf')
     
     print("\n" + "="*80)
@@ -1480,11 +1555,105 @@ def analyze_basic_strategy_results(return_data, cash_flows):
     print(f"{'Total Net Profit:':<25}${total_net_profit:>10,.2f}")
     print(f"{'Average Profit:':<25}{avg_profit:>10.2%}")
     print(f"{'Average Loss:':<25}{avg_loss:>10.2%}")
+    print(f"{'Max Profit:':<25}{max_profit:>10.2%}")
+    print(f"{'Min Profit:':<25}{min_profit:>10.2%}")
+    print(f"{'Max Loss:':<25}{max_loss:>10.2%}")
+    print(f"{'Min Loss:':<25}{min_loss:>10.2%}")
+    
     print(f"{'Profit Factor:':<25}{profit_factor:>10.2f}")
     print("="*80)
+def save_performance_report(return_data, cash_flows, output_file="performance_report.txt"):
+    """
+    将策略分析结果保存为格式化的文本报告（仅包含最终显示的指标）
+    """
+    import pandas as pd
+    from pathlib import Path
+    
+    # 计算所有指标
+    total_trades = len(return_data)
+    winning_trades = return_data[return_data['net_return'] > 0]
+    losing_trades = return_data[return_data['net_return'] <= 0]
+    win_rate = len(winning_trades) / total_trades
+    
+    metrics = {
+        'total_trades': total_trades,
+        'winning_trades': len(winning_trades),
+        'win_rate': win_rate,
+        'losing_trades': len(losing_trades),
+        'total_net_profit': sum(trade['cash']['net'] for trade in cash_flows.values()),
+        'avg_profit': winning_trades['net_return'].mean(),
+        'avg_loss': losing_trades['net_return'].mean() if len(losing_trades) > 0 else 0,
+        'max_profit': winning_trades['net_return'].max(),
+        'min_profit': winning_trades['net_return'].min(),
+        'max_loss': losing_trades['net_return'].max() if len(losing_trades) > 0 else 0,
+        'min_loss': losing_trades['net_return'].min() if len(losing_trades) > 0 else 0,
+        'profit_factor': -winning_trades['net_return'].mean() / losing_trades['net_return'].mean() \
+                        if len(losing_trades) > 0 else float('inf')
+    }
+    
+    # 生成格式化的文本
+    report_text = f"""
+{'='*80}
+{'STRATEGY PERFORMANCE ANALYSIS'.center(80)}
+{'='*80}
+{'Total Trades:':<25}{metrics['total_trades']:>10}
+{'Winning Trades:':<25}{metrics['winning_trades']:>10} ({metrics['win_rate']:.1%})
+{'Losing Trades:':<25}{metrics['losing_trades']:>10}
+{'-'*80}
+{'Total Net Profit:':<25}${metrics['total_net_profit']:>10,.2f}
+{'Average Profit:':<25}{metrics['avg_profit']:>10.2%}
+{'Average Loss:':<25}{metrics['avg_loss']:>10.2%}
+{'Max Profit:':<25}{metrics['max_profit']:>10.2%}
+{'Min Profit:':<25}{metrics['min_profit']:>10.2%}
+{'Max Loss:':<25}{metrics['max_loss']:>10.2%}
+{'Min Loss:':<25}{metrics['min_loss']:>10.2%}
+{'Profit Factor:':<25}{metrics['profit_factor']:>10.2f}
+{'='*80}
+"""
+    
+    # 写入文件
+    Path(output_file).write_text(report_text)
+    print(f"策略绩效报告已保存至 {output_file}")
 
+# 调用示例
+
+# 调用方式
     #手续费
     # 季度中交易，第一阶段收益率最大值/平均值做参考，吃了跑
     #3 吃了还要吃，建仓条件？1.新价差=初始价差
+def basic_strategy():
+    # 1.在这个季度开始前（上一个季度末/上一个比特币季度合约交割日结束之前）：买比特币现货，做空这个季度的比特币季度合约。
+    # 2.在这个季度末（这个比特币季度合约交割日结束之前）：卖出比特币现货，平仓这个季度的比特币合约（完成交割？）｜买比特币，做空下一个季度的比特币季度合约...
+
+    # 参数， 交易手续费 基础用户： 现货 0.1% 合约  0.05%
+    # 资金费率，暂不考虑
+    # Initialize
+    backtester = BinanceArbitrageBacktester(symbol='BTCUSDT', interval='4h')
+    
+    # 1. Get data
+    print("获取现货数据...")
+    spot_data = backtester.get_spot_data(years=5, extra_days=0)
+    print("获取期货数据...")
+    contracts = backtester.get_all_futures_data(start_date='2021-12-01')
+    futures_data = backtester.futures_data
+    # validate_contract_dates(futures_data,contracts)
+
+    # 2. Generate trading signals with improved error handling
+    roll_dates = generate_roll_dates(futures_data,contracts)
+    # print("交易日：")
+    # print(roll_dates)
+    return_data, cash_flows = calculate_returns(spot_data,futures_data,roll_dates)
+    # print("交易记录")
+    # print_trade_summary(cash_flows)
+    # print(return_data[['trade_id', 'contract', 'open_time', 'close_time',
+    #                 'spot_entry_price', 'future_entry_price',
+    #                 'net_return', 'annualized_return']])
+    save_all_results(return_data, cash_flows)
+    # plot_results(return_data)
+
+    # plot_results_enhanced(return_data)
+    save_performance_report(return_data, cash_flows)
+
+
 if __name__ == "__main__":
     basic_strategy()
