@@ -5,6 +5,7 @@ import os
 import time
 from rest_api import get_common_symbols
 
+# initialize shared_data
 exchanges = ['Binance', 'OKX', 'Bitget', 'Bybit']
 symbols = get_common_symbols()
 #print(f"monitoring {len(symbols)} currencies") 163
@@ -36,36 +37,49 @@ async def display_terminal():
 
 # -------- Binance --------
 async def binance_ws():
-    uri = f"wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
+    params = [f"{s.lower()}@bookTicker" for s in symbols]
+    uri = f"wss://fstream.binance.com/stream?streams=" + "/".join(params)
+
+    subscribe_msg = {
+        "method": "SUBSCRIBE",
+        "params": params,
+        "id": 1
+    }
     async with websockets.connect(uri) as ws:
         while True:
             msg = await ws.recv()
-            data = json.loads(msg)
-            bid = data['b']
-            ask = data['a']
-            shared_data["Binance"]["BTCUSDT"]["bid"] = bid
-            shared_data["Binance"]["BTCUSDT"]["ask"] = ask
+            envelope = json.loads(msg)
+            payload = envelope.get('data', {})
+            symbol = payload.get('s')
+            bid = payload.get('b')
+            ask = payload.get('a')
+            if symbol in shared_data:
+                shared_data[symbol]["Binance"]["bid"] = bid
+                shared_data[symbol]["Binance"]["ask"] = ask
 
             # print(f"[Binance] BTCUSDT: bid={bid} ask={ask}")
 
 # -------- Bybit --------
 async def bybit_ws():
-    uri = "wss://stream.bybit.com/v5/public/spot"
+    uri = "wss://stream.bybit.com/v5/public/linear"
     async with websockets.connect(uri) as ws:
+        params = [f"tickers.{symbol}" for symbol in symbols]
         subscribe_msg = {
             "op": "subscribe",
-            "args": ["orderbook.1.BTCUSDT"]
+            "args": params
         }
         await ws.send(json.dumps(subscribe_msg))
 
         while True:
             msg = await ws.recv()
-            data = json.loads(msg)
-            if 'data' in data:
-                bid = data['data']['b'][0][0]
-                ask = data['data']['a'][0][0]
-                shared_data["Bybit"]["BTCUSDT"]["bid"] = bid
-                shared_data["Bybit"]["BTCUSDT"]["ask"] = ask
+            envelope = json.loads(msg)
+            payload = envelope.get('data', {})
+            symbol = payload.get('s')
+            bid = payload.get('b')
+            ask = payload.get('a')
+            if symbol in shared_data:
+                shared_data["Bybit"]["Bybit"]["bid"] = bid
+                shared_data["Bybit"]["Bybit"]["ask"] = ask
                 # print(f"[Bybit]   BTCUSDT: bid={bid} ask={ask}")
 
 # -------- Bitget --------
@@ -120,10 +134,10 @@ async def okx_ws():
 # -------- 主程序，聚合运行 --------
 async def main():
     await asyncio.gather(
-        binance_ws(),
+        # binance_ws(),
         bybit_ws(),
-        bitget_ws(),
-        okx_ws(),
+        # bitget_ws(),
+        # okx_ws(),
         display_terminal()
     )
 
