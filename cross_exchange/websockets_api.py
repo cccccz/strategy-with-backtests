@@ -4,10 +4,12 @@ import websockets
 import os
 import time
 from rest_api import get_common_symbols
+import pandas as pd
 
 # initialize shared_data
 exchanges = ['Binance', 'OKX', 'Bitget', 'Bybit']
 symbols = get_common_symbols()
+okx_symbols = [symbol.replace('USDT','-USDT').replace('USDT','USDT-SWAP') for symbol in symbols]
 #print(f"monitoring {len(symbols)} currencies") 163
 shared_data = {
     symbol:{exchange:{"bid":None,"ask":None}for exchange in exchanges}for symbol in symbols
@@ -25,7 +27,10 @@ async def display_terminal():
         print("+------------+-----------+-------------+-------------+")
 
         for exchange, symbols in shared_data.items():
+            
             for symbol, data in symbols.items():
+                # print(symbol, exchange, data)
+
                 bid = data['bid'] if data['bid'] else "..."
                 ask = data['ask'] if data['ask'] else "..."
                 print(f"| {exchange:<10} | {symbol:<9} | {str(bid):<11} | {str(ask):<11} |")
@@ -89,10 +94,10 @@ async def bitget_ws():
         subscribe_msg = {
             "op": "subscribe",
             "args": [{
-                "instType": "SPOT",
+                "instType": "USDT-FUTURES",
                 "channel": "ticker",
-                "instId": "BTCUSDT"
-            }]
+                "instId": symbol
+            }for symbol in symbols]
         }
         await ws.send(json.dumps(subscribe_msg))
 
@@ -103,20 +108,23 @@ async def bitget_ws():
                 item = data['data'][0]
                 bid = item['bidPr']
                 ask = item['askPr']
-                shared_data["Bitget"]["BTCUSDT"]["bid"] = bid
-                shared_data["Bitget"]["BTCUSDT"]["ask"] = ask
+                symbol = item['instId']
+                if symbol in shared_data:
+                    shared_data[symbol]["Bitget"]["bid"] = bid
+                    shared_data[symbol]["Bitget"]["ask"] = ask
                 # print(f"[Bitget]  BTCUSDT: bid={bid} ask={ask}")
 
 # -------- OKX --------
 async def okx_ws():
     uri = "wss://ws.okx.com:8443/ws/v5/public"
     async with websockets.connect(uri) as ws:
+        
         subscribe_msg = {
             "op": "subscribe",
             "args": [{
                 "channel": "tickers",
-                "instId": "BTC-USDT-SWAP"
-            }]
+                "instId": symbol
+            }for symbol in okx_symbols]
         }
         await ws.send(json.dumps(subscribe_msg))
 
@@ -125,19 +133,21 @@ async def okx_ws():
             data = json.loads(msg)
             if 'data' in data and len(data['data']) > 0:
                 item = data['data'][0]
-                bid = item['bidPx']
-                ask = item['askPx']
-                shared_data["OKX"]["BTC-USDT-SWAP"]["bid"] = bid
-                shared_data["OKX"]["BTC-USDT-SWAP"]["ask"] = ask
+                bid = pd.to_numeric(item['bidPx'])
+                ask = pd.to_numeric(item['askPx'])
+                symbol = item['instId'].replace('-SWAP','').replace('-','')
+                if symbol in shared_data:
+                    shared_data[symbol]["OKX"]["bid"] = bid
+                    shared_data[symbol]["OKX"]["ask"] = ask
                 # print(f"[OKX]     BTC-USDT: bid={bid} ask={ask}")
 
 # -------- 主程序，聚合运行 --------
 async def main():
     await asyncio.gather(
-        # binance_ws(),
+        binance_ws(),
         bybit_ws(),
-        # bitget_ws(),
-        # okx_ws(),
+        bitget_ws(),
+        okx_ws(),
         display_terminal()
     )
 
