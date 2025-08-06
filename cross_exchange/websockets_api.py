@@ -7,7 +7,6 @@ import os
 import time
 from rest_api import get_common_symbols
 import pandas as pd
-from utils import async_timeit, timeit, log_duration
 from decimal import Decimal, getcontext
 
 def clear_terminal():
@@ -50,7 +49,7 @@ async def display_terminal():
 
 
 # -------- Binance --------
-@async_timeit
+
 async def binance_ws():
     params = [f"{s.lower()}@bookTicker" for s in symbols]
     uri = f"wss://fstream.binance.com/stream?streams=" + "/".join(params)
@@ -74,30 +73,29 @@ async def binance_ws():
 
             # print(f"[Binance] BTCUSDT: bid={bid} ask={ask}")
 
-# # -------- Bybit --------
-# @async_timeit
-# async def bybit_ws():
-#     uri = "wss://stream.bybit.com/v5/public/linear"
-#     async with websockets.connect(uri) as ws:
-#         params = [f"tickers.{symbol}" for symbol in symbols]
-#         subscribe_msg = {
-#             "op": "subscribe",
-#             "args": params
-#         }
-#         await ws.send(json.dumps(subscribe_msg))
+# -------- Bybit --------
+async def bybit_ws():
+    uri = "wss://stream.bybit.com/v5/public/linear"
+    async with websockets.connect(uri) as ws:
+        params = [f"tickers.{symbol}" for symbol in symbols]
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": params
+        }
+        await ws.send(json.dumps(subscribe_msg))
 
-#         while True:
-#             msg = await ws.recv()
-#             envelope = json.loads(msg)
-#             payload = envelope['data']
-#             symbol = payload.get('symbol')
-#             bid = payload.get('bid1Price')
-#             ask = payload.get('ask1Price')
-#             if symbol in shared_data:
-#                 shared_data[symbol]["Bybit"]["bid"] = Decimal(bid)
-#                 shared_data[symbol]["Bybit"]["ask"] = Decimal(ask)
-#                 # print(f"[Bybit]   BTCUSDT: bid={bid} ask={ask}")
-@async_timeit
+        while True:
+            msg = await ws.recv()
+            envelope = json.loads(msg)
+            payload = envelope['data']
+            symbol = payload.get('symbol')
+            bid = payload.get('bid1Price')
+            ask = payload.get('ask1Price')
+            if symbol in shared_data:
+                shared_data[symbol]["Bybit"]["bid"] = Decimal(bid)
+                shared_data[symbol]["Bybit"]["ask"] = Decimal(ask)
+                # print(f"[Bybit]   BTCUSDT: bid={bid} ask={ask}")
+
 async def bybit_ws():
     uri = "wss://stream.bybit.com/v5/public/linear"
     async with websockets.connect(uri) as ws:
