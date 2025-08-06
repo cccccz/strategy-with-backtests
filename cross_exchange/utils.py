@@ -5,7 +5,7 @@ import functools
 import asyncio
 import logging
 
-# 日志初始化（你可以统一配置也可以在这里初始化）
+# log initilizing
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -14,7 +14,7 @@ logger = logging.getLogger("perf")
 
 
 def timeit(func):
-    """同步函数计时器装饰器"""
+    """decoration for just functions"""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start = time.perf_counter()
@@ -26,7 +26,7 @@ def timeit(func):
 
 
 def async_timeit(func):
-    """异步函数计时器装饰器"""
+    """decoration for asyn"""
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         start = time.perf_counter()
@@ -38,7 +38,7 @@ def async_timeit(func):
 
 
 def log_duration(name="block"):
-    """上下文管理器用来手动记录任意代码块的耗时"""
+    """context management for timing functions"""
     class Timer:
         def __enter__(self):
             self.start = time.perf_counter()

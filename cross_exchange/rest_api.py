@@ -150,27 +150,6 @@ def get_common_symbols():
     common_symbols = set(reduce(lambda x, y:set(x) & set(y), name_lists))
     return list(common_symbols)
 
-def timeit(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = func(*args, **kwargs)
-        duration = (time.perf_counter() - start) * 1000  # ms
-        logger.info(f"[TimeIt] {func.__name__} took {duration:.3f} ms")
-        return result
-    return wrapper
-
-def async_timeit(func):
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = await func(*args, **kwargs)
-        duration = (time.perf_counter() - start) * 1000  # ms
-        logger.info(f"[AsyncTimeIt] {func.__name__} took {duration:.3f} ms")
-        return result
-    return wrapper
-
-
 if __name__ == '__main__':
 
     print("hello world!")
