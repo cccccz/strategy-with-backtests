@@ -8,33 +8,12 @@ import os
 import time
 from rest_api import get_common_symbols
 import pandas as pd
-from decimal import Decimal, getcontext
 from functools import wraps
-
-def quick_timer(func):
-    @wraps(func)
-    async def async_wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = await func(*args, **kwargs)
-        end = time.perf_counter()
-        print(f"[PERF] {func.__name__}: {(end-start)*1000:.2f}ms")
-        return result
-    
-    @wraps(func)
-    def sync_wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = func(*args, **kwargs)
-        end = time.perf_counter()
-        print(f"[PERF] {func.__name__}: {(end-start)*1000:.2f}ms")
-        return result
-    
-    return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-
 def clear_terminal():
     os.system("cls" if os.name == "nt" else "clear")
 
 def display_exchange_data():
-        clear_terminal()
+        # clear_terminal()
         print("+------------+-----------+-------------+-------------+")
         print("|   Symbol   | Exchange  | Bid Price   |  Ask Price  |")
         print("+------------+-----------+-------------+-------------+")
@@ -51,6 +30,7 @@ def display_exchange_data():
         print("+------------+-----------+-------------+-------------+")
 
 def display_trade():
+    global active_trades
     if not active_trades.empty():
         strategy_result = active_trades[0]
         print(f"Symbol: {strategy_result['symbol']}")
@@ -72,15 +52,119 @@ def display_trade():
         print(f"Trade Time: {strategy_result['trade_time']}")
 
         print("-" * 50)
+
+def display_trade_history():
+    """Display formatted trade history showing key information"""
+    global trade_history
     
+    if not trade_history:
+        print("No trade history available.")
+        return
+    
+    print("\n" + "="*120)
+    print("TRADE HISTORY")
+    print("="*120)
+    
+    # Group trades by pairs (open + close)
+    trade_pairs = []
+    open_trades = {}
+    
+    for trade in trade_history:
+        if trade['action'] == 'open':
+            # Store open trade with timestamp as key
+            open_trades[trade['time_stamp_opportunity']] = trade
+        elif trade['action'] == 'close':
+            # Find matching open trade and pair them
+            matching_open = None
+            for timestamp, open_trade in open_trades.items():
+                if (open_trade['symbol'] == trade['symbol'] and 
+                    open_trade['best_buy_exchange'] == trade['best_buy_exchange'] and
+                    open_trade['best_sell_exchange'] == trade['best_sell_exchange']):
+                    matching_open = open_trade
+                    break
+            
+            if matching_open:
+                trade_pairs.append((matching_open, trade))
+                del open_trades[timestamp]
+    
+    # Add any remaining open trades (not yet closed)
+    for open_trade in open_trades.values():
+        trade_pairs.append((open_trade, None))
+    
+    # Display header
+    print(f"{'#':<3} {'Symbol':<12} {'Buy Exchange':<12} {'Buy Price':<12} {'Sell Exchange':<12} {'Sell Price':<12} {'Open Time':<20} {'Close Time':<20} {'PnL':<15} {'Status':<10}")
+    print("-" * 120)
+    
+    # Display each trade pair
+    for i, (open_trade, close_trade) in enumerate(trade_pairs, 1):
+        symbol = open_trade['symbol']
+        buy_exchange = open_trade['best_buy_exchange']
+        buy_price = f"{open_trade['best_buy_price']:.6f}"
+        sell_exchange = open_trade['best_sell_exchange'] 
+        sell_price = f"{open_trade['best_sell_price']:.6f}"
+        
+        # Format timestamps
+        open_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(open_trade['trade_time']))
+        
+        if close_trade:
+            close_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(close_trade['close_time']))
+            pnl = f"{close_trade['pnl']:.8f}"
+            status = "CLOSED"
+        else:
+            close_time = "OPEN"
+            pnl = f"{open_trade['estimated_net_profit']:.8f}"
+            status = "OPEN"
+        
+        print(f"{i:<3} {symbol:<12} {buy_exchange:<12} {buy_price:<12} {sell_exchange:<12} {sell_price:<12} {open_time:<20} {close_time:<20} {pnl:<15} {status:<10}")
+    
+    # Summary statistics
+    closed_trades = [pair for pair in trade_pairs if pair[1] is not None]
+    if closed_trades:
+        total_pnl = sum(close_trade['pnl'] for _, close_trade in closed_trades)
+        avg_pnl = total_pnl / len(closed_trades)
+        profitable_trades = len([pair for pair in closed_trades if pair[1]['pnl'] > 0])
+        
+        print("-" * 120)
+        print(f"SUMMARY: Total Trades: {len(closed_trades)} | Profitable: {profitable_trades} | Total PnL: {total_pnl:.8f} | Avg PnL: {avg_pnl:.8f}")
+    
+    print("=" * 120)
+
+# Update your display_terminal function to include this:
 async def display_terminal():
     while True:
         display_exchange_data()
-
+        display_trade_history()  # Add this line
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         await asyncio.sleep(1)
 
-
+def display_trade_history_compact():
+    """Compact version showing only recent trades"""
+    global trade_history
+    
+    if not trade_history:
+        return
+    
+    # Show only last 5 completed trade pairs
+    print(f"\nRECENT TRADES (Last 5):")
+    print(f"{'Symbol':<10} {'Buy@':<15} {'Sell@':<15} {'PnL':<12} {'Status':<8}")
+    print("-" * 58)
+    
+    # Get recent trades (both open and close)
+    recent_trades = trade_history[-10:]  # Get last 10 entries
+    
+    for trade in recent_trades:
+        symbol = trade['symbol']
+        buy_info = f"{trade['best_buy_exchange'][:3]}@{trade['best_buy_price']:.4f}"
+        sell_info = f"{trade['best_sell_exchange'][:3]}@{trade['best_sell_price']:.4f}"
+        
+        if trade['action'] == 'close':
+            pnl = f"{trade['pnl']:.6f}"
+            status = "CLOSED"
+        else:
+            pnl = f"{trade['estimated_net_profit']:.6f}"
+            status = "OPENED"
+        
+        print(f"{symbol:<10} {buy_info:<15} {sell_info:<15} {pnl:<12} {status:<8}")
 # -------- Binance --------
 
 async def binance_ws():
@@ -101,8 +185,8 @@ async def binance_ws():
             bid = payload.get('b')
             ask = payload.get('a')
             if symbol in shared_data:
-                shared_data[symbol]["Binance"]["bid"] = Decimal(bid)
-                shared_data[symbol]["Binance"]["ask"] = Decimal(bid)
+                shared_data[symbol]["Binance"]["bid"] = float(bid)
+                shared_data[symbol]["Binance"]["ask"] = float(bid)
 
             # print(f"[Binance] BTCUSDT: bid={bid} ask={ask}")
 
@@ -131,9 +215,9 @@ async def bybit_ws():
                     
                     if symbol and bid and ask and symbol in shared_data:
                         if 'bid1Price' in payload:
-                            shared_data[symbol]["Bybit"]["bid"] = Decimal(bid)
+                            shared_data[symbol]["Bybit"]["bid"] = float(bid)
                         if 'ask1Price' in payload:
-                            shared_data[symbol]["Bybit"]["ask"] = Decimal(ask)
+                            shared_data[symbol]["Bybit"]["ask"] = float(ask)
                         # print(f"[Bybit] {symbol}: bid={bid} ask={ask}")
                     # else:
                     #     # Debug missing data
@@ -167,8 +251,8 @@ async def bitget_ws():
                 ask = item.get('askPr')
                 symbol = item['instId']
                 if symbol in shared_data:
-                    shared_data[symbol]["Bitget"]["bid"] = Decimal(bid)
-                    shared_data[symbol]["Bitget"]["ask"] = Decimal(ask)
+                    shared_data[symbol]["Bitget"]["bid"] = float(bid)
+                    shared_data[symbol]["Bitget"]["ask"] = float(ask)
                 # print(f"[Bitget]  BTCUSDT: bid={bid} ask={ask}")
 
 # -------- OKX --------
@@ -194,104 +278,24 @@ async def okx_ws():
                 ask = item.get('askPx')
                 symbol = item['instId'].replace('-SWAP','').replace('-','')
                 if symbol in shared_data:
-                    shared_data[symbol]["OKX"]["bid"] = Decimal(bid)
-                    shared_data[symbol]["OKX"]["ask"] = Decimal(ask)
+                    shared_data[symbol]["OKX"]["bid"] = float(bid)
+                    shared_data[symbol]["OKX"]["ask"] = float(ask)
                 # print(f"[OKX]     BTC-USDT: bid={bid} ask={ask}")
-
-# async def compute_strategy():
-#     """
-#     compute_strategy only runs every COMPUTE_INTERVAL seconds
-#     bid 买价 ask 卖价
-#     """
-    
-#     compute_interval = COMPUTE_INTERVAL
-#     minimum_profit_pct = MINIMUM_PROFIT_PCT
-
-
-#     while True:
-#         loop_start = time.perf_counter()
-#         async with lock: 
-#             # snapshot = copy.deepcopy(shared_data)
-#             snapshot = copy.deepcopy(shared_data)
-
-#         best_strategy = None
-#         print(f"total number of data {len(snapshot.items())}")
-
-#         for symbol, exchange_data in snapshot.items():
-#             quotes = []
-#             for exchange, data in exchange_data.items():
-#                 bid, ask = data['bid'], data['ask']
-#                 if bid and ask:
-#                     quotes.append((exchange, float(bid), float(ask)))
-
-#             if len(quotes) < 2:
-#                 continue
-
-#             # 在最便宜的卖家 买入
-#             # 在出价最高的买家 卖出
-#             best_buy = min(quotes, key=lambda x: x[2])  # ask
-#             best_sell = max(quotes, key=lambda x: x[1])  # bid
-#             trade_amount = 1
-#             costs =  calculate_total_cost(best_buy[0],best_sell[0],best_buy[2],best_sell[1],trade_amount)
-#             total_cost = costs['total_cost']
-#             buy_fee = costs['buy_fee'] 
-#             sell_fee = costs['sell_fee']
-#             slippage_cost = costs['slippage_cost']
-#             open_spread = best_sell[1] - best_buy[2]
-#             open_spread_pct = 2 * open_spread / (best_buy[2] + best_sell[1])
-#             close_spread_pct = 2 * (best_sell[2] - best_buy[1]) / (best_buy[1] + best_sell[2])
-
-
-#             estimated_net_profit = open_spread - total_cost
-#             estimated_net_profit_pct = estimated_net_profit / best_buy[2]
-#             strategy_result = None
-#             if estimatednet_profit_pct > minimum_profit_pct:
-#                 strategy_result = {
-#                     'symbol': symbol,
-#                     'best_buy': best_buy[0],
-#                     'best_buy_price': best_buy[2],
-#                     'best_sell': best_sell[0],
-#                     'best_sell_price': best_sell[1],
-#                     'open_spread': open_spread,
-#                     'open_spread_pct': open_spread_pct,
-#                     'close_spread_pct': close_spread_pct,
-
-#                     'total_cost': total_cost,
-#                     'buy_fee': buy_fee,
-#                     'sell_fee': sell_fee,
-#                     'slippage_cost': slippage_cost,
-#                     'estimated_profit': estimated_net_profit,
-#                     'estimated_net_profit_pct': estimated_net_profit_pct,
-#                     # 'profit_pct': profit_pct,
-#                     'time_stamp': time.time()}
-            
-#             if best_strategy is None or open_spread_pct > best_strategy['open_spread_pct']:
-#                 best_strategy = strategy_result
-
-#         if best_strategy:
-#             await strategy_results_queue.put(best_strategy)
-#                 # print(f"[ARBITRAGE] {symbol}: Buy on {best_buy[0]} @ {best_buy[2]}, "
-#                 #       f"Sell on {best_sell[0]} @ {best_sell[1]} "
-#                 #       f"=> Profit: {profit_pct:.4%} > Cost: {cost_pct:.4%}")
-#                 # simulate_trade(...)
-#         loop_time = (time.perf_counter() - loop_start) * 1000
-#         print(f"[TIMING] Calculation Strategy Loop took: {loop_time:.2f}ms")
-#         await asyncio.sleep(compute_interval)
 
 async def compute_strategy():
     """
     compute_strategy only runs every COMPUTE_INTERVAL seconds
     bid 买价 ask 卖价
     """
-
     while True:
         async with lock: 
             # snapshot = copy.deepcopy(shared_data)
             snapshot = copy.deepcopy(shared_data)
 
         best_strategy = None
-        print(f"total number of data {len(snapshot.items())}")
+        # print(f"total number of data {len(snapshot.items())}")
         max_spread = 0
+        
         for symbol, exchange_data in snapshot.items():
             opportunity = calculate_opportunity(symbol,exchange_data)
             if opportunity is not None and opportunity['open_spread_pct'] >= MINIMUM_SPREAD_PCT and opportunity['open_spread_pct'] > max_spread:
@@ -335,8 +339,6 @@ def calculate_opportunity(symbol, exchange_data):
         # 'close_spread_pct': close_spread_pct,
         'time_stamp_opportunity': time.time()}
 
-
-
 def enrich_with_costs_and_profits(opportunity):
     strategy_result = opportunity
     quotes = opportunity['quotes']
@@ -346,11 +348,12 @@ def enrich_with_costs_and_profits(opportunity):
 
     trade_amount = 1
     costs =  calculate_open_costs(best_buy[0],best_sell[0],best_buy[2],best_sell[1],trade_amount)
-    total_cost = costs['total_cost']
+    estimated_close_costs = calculate_exit_costs(best_buy[0], best_sell[0], best_sell[1], best_buy[2], trade_amount)
+    total_cost = costs['total_cost'] + estimated_close_costs['total_cost']
     buy_fee = costs['buy_fee'] 
     sell_fee = costs['sell_fee']
     # slippage_cost = costs['slippage_cost']
-    open_spread = best_sell[1] - best_buy[2]
+    open_spread = float(best_sell[1] - best_buy[2])
     open_spread_pct = 2 * open_spread / (best_buy[2] + best_sell[1])
     close_spread_pct = 2 * (best_sell[2] - best_buy[1]) / (best_buy[1] + best_sell[2])
 
@@ -369,19 +372,21 @@ def enrich_with_costs_and_profits(opportunity):
             'close_spread_pct': close_spread_pct,
             'trade_amount': trade_amount,
             'margin_required': margin_required,
-            'total_cost': total_cost,
+            'estimated_total_cost': total_cost,
             'buy_fee': buy_fee,
             'sell_fee': sell_fee,
             'net_entry': costs['net_entry'],
-            'estimated_profit': estimated_net_profit,
+            'estimated_net_profit': estimated_net_profit,
             'estimated_net_profit_pct': estimated_net_profit_pct,
+            # slippage ignored
             # 'profit_pct': profit_pct,
             'time_stamp_opportunity': opportunity['time_stamp_opportunity'],
+            'stop_loss': -abs(estimated_net_profit * STOP_LOSS_PCT),
              }
     return enriched
 
 def open_position(enrich_trade):
-    global opening_positions
+    global opening_positions,trade_history,active_trades
     enrich_trade['trade_time'] = time.time()
     enrich_trade['action'] = 'open'
     trade_history.append(enrich_trade)
@@ -392,8 +397,11 @@ def calculate_open_costs(buy_exchange, sell_exchange, buy_price, sell_price, tra
     """Calculate costs to OPEN arbitrage position
     - BUY at buy_exchange's ASK price (pay ask)
     - Sell at sell_exchanges's BID price (receive bid)"""
-    buy_fee = trade_amount * FUTURES_TRADING_FEES[buy_exchange]['taker'] * buy_price
-    sell_fee = trade_amount * FUTURES_TRADING_FEES[sell_exchange]['taker'] * sell_price
+    trade_amount = float(trade_amount)
+    buy_price = float(buy_price)
+    sell_price = float(sell_price)
+    buy_fee = trade_amount * float(FUTURES_TRADING_FEES[buy_exchange]['taker']) * buy_price
+    sell_fee = trade_amount * float(FUTURES_TRADING_FEES[sell_exchange]['taker']) * sell_price
     # slippage_cost = trade_amount * SLIPPAGE_RATE
     slippage_cost = 0
 
@@ -414,12 +422,14 @@ def calculate_exit_costs(buy_exchange,sell_exchange,current_buy_price,current_se
     - Sell at buy_exchange's BID price (close long position)
     - BUY at sell_echange's ASK price (close short position)
     """
-    close_long_fee = trade_amount * FUTURES_TRADING_FEES[buy_exchange]['taker'] * current_buy_price
-    close_short_fee = trade_amount * FUTURES_TRADING_FEES[sell_exchange]['taker'] * current_sell_price
+    trade_amount = float(trade_amount)
+    current_buy_price = float(current_buy_price)
+    current_sell_price = float(current_sell_price)
+    close_long_fee = trade_amount * float(FUTURES_TRADING_FEES[buy_exchange]['taker']) * current_buy_price
+    close_short_fee = trade_amount * float(FUTURES_TRADING_FEES[sell_exchange]['taker']) * current_sell_price
     # slippage_cost = trade_amount * SLIPPAGE_RATE
     slippage_cost = 0
 
-    
     return {
         'total_cost': close_long_fee + close_short_fee + slippage_cost,
         'close_long_cost': close_long_fee,
@@ -427,71 +437,17 @@ def calculate_exit_costs(buy_exchange,sell_exchange,current_buy_price,current_se
         'net_exit' : current_buy_price - current_sell_price
     }
 
-# def calculate_unrealized_pnl(trade, current_buy_bid, current_sell_ask):
-#     """profit/loss if we close now"""
-#     entry_net = trade['net_entry']
-#     entry_costs = trade['total_cost']
-
-
-#     return unrealized_pnl
-
-async def handle_active_positions():
-    if opening_positions <= 0:
-        raise ValueError('opening_positions cannot be negative')
-    async with lock: 
-        snapshot = copy.deepcopy(shared_data)
-
-    # fetch trade info
-    trade = active_trades[0]
-    symbol = trade['symbol']
-    buy_exchange = trade['best_buy_exchange']
-    sell_exchange = trade['best_sell_exchange']
-
-    # fetch current market info
-    current_buy_price = snapshot[symbol][buy_exchange]['ask']
-    current_sell_price = snapshot[symbol][sell_exchange]['bid']
-    
-    if not (current_buy_price and current_sell_price):
-        return None
-    
-    # cost calculation
-    exit_costs = calculate_exit_costs(
-        buy_exchange,
-        sell_exchange,
-        current_buy_price,
-        current_sell_price,
-        trade['trade_amount']
-    )
-    position_age = time.time() - trade['trade_time']
-    current_spread = current_sell_price - current_buy_price
-    #unrealized_pnl
-
-    # should close? = profit evaluation + risk management
-    if position_age > MAX_HOLDING_TIME:
-        return True
-    entry_net = trade['net_entry']
-    entry_costs = trade['total_cost']
-    exit_net = exit_costs['exit_net']
-    unrealized_pnl = entry_net + exit_net - entry_costs - exit_costs['total_cost']
-
-    # TODO
-    if unrealized_pnl >= trade['estimated_net_profit']:
-        return True
-    # execute close position or do nothing
-
-    if unrealized_pnl <= trade['stop_loss']:
-        return True
-
-    return False
-
 def should_open_position(enrich_trade):
+    global opening_positions
     if opening_positions <= MAX_POSITION_SIZE:
         # logic about balance on those exchange...
         # TODO
         if enrich_trade['estimated_net_profit_pct'] >= MINIMUM_PROFIT_PCT:
             # and some logic about margin
+            # print("we should open position")
             return True
-    
+        
+    # print(f"not an opportunity:{enrich_trade}")
     return False
 
 def evaluate_active_position(trade,snapshot):
@@ -523,9 +479,10 @@ def evaluate_active_position(trade,snapshot):
     if position_age > MAX_HOLDING_TIME:
         return True
     entry_net = trade['net_entry']
-    entry_costs = trade['total_cost']
-    exit_net = exit_costs['exit_net']
-    unrealized_pnl = entry_net + exit_net - entry_costs - exit_costs['total_cost']
+    #slippage
+    entry_costs = trade['buy_fee'] + trade['sell_fee'] 
+    exit_net = exit_costs['total_cost']
+    unrealized_pnl = entry_net + exit_net - entry_costs - exit_net
 
     return {'current_spread': current_sell_price - current_buy_price,
             'unrealized_pnl': unrealized_pnl,
@@ -536,61 +493,65 @@ def evaluate_active_position(trade,snapshot):
             }
 
 def should_close_position(trade,current_status):
-    unrealized_pnl = current_status['unrealized_pnl']
-    if unrealized_pnl >= trade['estimated_net_profit']* 0.5:
+    unrealized_pnl_pct = current_status['unrealized_pnl']/trade['best_buy_price'] * trade['trade_amount']
+    if unrealized_pnl_pct >= trade['estimated_net_profit_pct']*0.3:
+        # print("close trade because earned enough")
         return True
     # execute close position or do nothing
 
-    if unrealized_pnl <= trade['stop_loss']:
+    
+    if unrealized_pnl_pct <= STOP_LOSS_PCT:
+        print("close trade because of stop loss")
         return True
 
+    print("holding position")
     return False
 
 def determine_exit_reason(trade,current_status):
     return "unimplemented"
 
 def close_position(trade,current_status):
-    global opening_positions
+    global opening_positions, trade_history, active_trades
     trade = trade.copy()
     trade.update({
         'action': 'close',
         'close_time': time.time(),
-        'pnl': trade['unrealized_pnl'],
+        'pnl': current_status['unrealized_pnl'],
         'exit_reason': determine_exit_reason(trade,current_status)})
     trade_history.append(trade)
     active_trades.pop()
     opening_positions -= 1
 
 async def execute_simulation():
+    global active_trades, trade_history, opening_positions
     print("[SIMULATION] Simulation starts")
-    async with lock: 
-        trades = copy.deepcopy(trade_history)
-    #where to lock? # what to lock?
 
     while True:
     # await handle_new_opportunities()
         opportunity = await strategy_results_queue.get()
+        # print("Evaluating the strategy from strategy_results_queue")
         enrich_trade = enrich_with_costs_and_profits(opportunity)
-    
-        if should_open_position(enrich_trade):
-            open_position(enrich_trade)
 
-        if opening_positions <= 0:
-            raise ValueError('opening_positions cannot be negative')
-        
-        # handle active positions
-        async with lock: 
-            snapshot = copy.deepcopy(shared_data)
+        async with lock:
+            if should_open_position(enrich_trade):
+                open_position(enrich_trade)
 
-        trade = active_trades[0]
-        current_status = evaluate_active_position(trade,snapshot)
-        if current_status:
-            unrealized_pnl = current_status['unrealized_pnl']
-        # else handle current_status = None
-        if should_close_position(trade,current_status):
-            close_position(trade,current_status)
-        
-        # print('fake handling_active_position')
+            if opening_positions < 0:
+                raise ValueError('opening_positions cannot be negative')
+            
+            if opening_positions > 1:
+                print("lol race condition")
+            # handle active positions
+            if len(active_trades) > 0:
+                # this should be equivalent to opening_positions == 0
+                async with lock:
+                    snapshot = copy.deepcopy(shared_data)
+                trade = active_trades[0]
+                current_status = evaluate_active_position(trade,snapshot)
+                if current_status and should_close_position(trade,current_status):
+                    close_position(trade,current_status)
+                
+            # print('fake handling_active_position')
         await asyncio.sleep(0.1)
 
 
@@ -631,7 +592,7 @@ if __name__ == '__main__':
     MINIMUM_PROFIT_PCT = 0
 
     TRADE_AMOUNT_USDT = 1000    # 每次套利的金额
-    MAX_POSITION_SIZE = 5000    # 最大持仓限制
+    MAX_POSITION_SIZE = 1   # 最大持仓限制
     AVAILABLE_BALANCE = {       # 每个交易所的可用余额
         'Binance': 10000,
         'Bybit': 10000,
@@ -639,7 +600,7 @@ if __name__ == '__main__':
         'Bitget': 10000
 }
     MAX_HOLDING_TIME = 300      # 最大持仓时间(秒)
-    STOP_LOSS_PCT = -0.5       # 止损百分比
+    STOP_LOSS_PCT = -0.01       # 止损百分比
     MAX_CONCURRENT_TRADES = 1   # 最大同时进行的套利数量
     MINIMUM_SPREAD_PCT = 0.0002
     active_trades = []
