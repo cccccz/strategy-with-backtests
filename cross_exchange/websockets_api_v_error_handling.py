@@ -9,6 +9,42 @@ import time
 from rest_api import get_common_symbols
 import pandas as pd
 from functools import wraps
+import logging
+from datetime import datetime
+
+# 设置日志格式
+log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+# 1. 配置决策日志（decision_log）
+decision_logger = logging.getLogger('decision_logger')
+decision_logger.setLevel(logging.INFO)  # 可以根据需要设置日志级别，如DEBUG, INFO, ERROR等
+
+decision_handler = logging.FileHandler('decision_log.txt')
+decision_handler.setFormatter(logging.Formatter(log_format))
+
+decision_logger.addHandler(decision_handler)
+
+# 2. 配置输出日志（output_log）
+output_logger = logging.getLogger('output_logger')
+output_logger.setLevel(logging.INFO)
+
+output_handler = logging.FileHandler('output_log.txt')
+output_handler.setFormatter(logging.Formatter(log_format))
+
+output_logger.addHandler(output_handler)
+decision_id = 0
+decision_id_lock = asyncio.Lock()
+
+async def get_next_decision_id():
+    global decision_id
+    async with decision_id_lock:
+        current_id = decision_id
+        decision_id += 1
+        return current_id
+
+
+lock = asyncio.Lock() 
+
 def clear_terminal():
     os.system("cls" if os.name == "nt" else "clear")
 
@@ -17,7 +53,6 @@ def display_exchange_data():
         print("+------------+-----------+-------------+-------------+")
         print("|   Symbol   | Exchange  | Bid Price   |  Ask Price  |")
         print("+------------+-----------+-------------+-------------+")
-
         for symbols, orderbooks in shared_data.items():
             
             for exchange, book in orderbooks.items():
@@ -195,128 +230,296 @@ def display_trade_history_compact():
 # Update your display_terminal function to include this:
 async def display_terminal():
     while True:
-        display_exchange_data()
+        # display_exchange_data()
         display_trade_history()  # Add this line
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"opening: {opening_positions}")
+        await asyncio.sleep(1)
 
 
-# -------- Binance --------
+import asyncio
+import json
+import websockets
+import time
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidStatusCode
+
+# Add these constants at the top of your file
+MAX_RECONNECT_ATTEMPTS = 5
+RECONNECT_DELAY = 5  # seconds
+CONNECTION_TIMEOUT = 10  # seconds
 
 async def binance_ws():
-    params = [f"{s.lower()}@bookTicker" for s in symbols]
-    uri = f"wss://fstream.binance.com/stream?streams=" + "/".join(params)
-
-    subscribe_msg = {
-        "method": "SUBSCRIBE",
-        "params": params,
-        "id": 1
-    }
-    async with websockets.connect(uri) as ws:
-        while True:
-            msg = await ws.recv()
-            envelope = json.loads(msg)
-            payload = envelope.get('data', {})
-            symbol = payload.get('s')
-            bid = payload.get('b')
-            ask = payload.get('a')
-            if symbol in shared_data:
-                shared_data[symbol]["Binance"]["bid"] = float(bid)
-                shared_data[symbol]["Binance"]["ask"] = float(bid)
-
-            # print(f"[Binance] BTCUSDT: bid={bid} ask={ask}")
+    """Binance WebSocket with error handling and reconnection"""
+    reconnect_count = 0
+    
+    while reconnect_count < MAX_RECONNECT_ATTEMPTS:
+        try:
+            params = [f"{s.lower()}@bookTicker" for s in symbols]
+            uri = f"wss://fstream.binance.com/stream?streams=" + "/".join(params)
+            
+            print(f"[Binance] Connecting... (attempt {reconnect_count + 1})")
+            
+            async with websockets.connect(
+                uri, 
+                ping_interval=20, 
+                ping_timeout=10,
+                close_timeout=10
+            ) as ws:
+                print(f"[Binance] Connected successfully")
+                reconnect_count = 0  # Reset counter on successful connection
+                
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                        envelope = json.loads(msg)
+                        payload = envelope.get('data', {})
+                        symbol = payload.get('s')
+                        bid = payload.get('b')
+                        ask = payload.get('a')
+                        
+                        if symbol and bid and ask and symbol in shared_data:
+                            shared_data[symbol]["Binance"]["bid"] = float(bid)
+                            shared_data[symbol]["Binance"]["ask"] = float(ask)  # Fixed: was using bid instead of ask
+                            
+                    except asyncio.TimeoutError:
+                        print(f"[Binance] No data received for 30s, checking connection...")
+                        await ws.ping()
+                        continue
+                    except json.JSONDecodeError as e:
+                        print(f"[Binance] JSON decode error: {e}")
+                        continue
+                        
+        except (ConnectionClosedError, ConnectionClosedOK) as e:
+            print(f"[Binance] Connection closed: {e}")
+        except InvalidStatusCode as e:
+            print(f"[Binance] Invalid status code: {e}")
+        except OSError as e:
+            print(f"[Binance] Network error: {e}")
+        except Exception as e:
+            print(f"[Binance] Unexpected error: {e}")
+        
+        reconnect_count += 1
+        if reconnect_count < MAX_RECONNECT_ATTEMPTS:
+            print(f"[Binance] Reconnecting in {RECONNECT_DELAY}s...")
+            await asyncio.sleep(RECONNECT_DELAY)
+        else:
+            print(f"[Binance] Max reconnection attempts reached, giving up")
+            break
 
 async def bybit_ws():
-    uri = "wss://stream.bybit.com/v5/public/linear"
-    async with websockets.connect(uri) as ws:
-        params = [f"tickers.{symbol}" for symbol in symbols]
-        subscribe_msg = {
-            "op": "subscribe",
-            "args": params
-        }
-        await ws.send(json.dumps(subscribe_msg))
-
-        while True:
-            try:
-                msg = await ws.recv()
-                envelope = json.loads(msg)
-                               
-                # Check if this is a ticker data message
-                if 'data' in envelope and envelope.get('topic', '').startswith('tickers.'):
-                    payload = envelope['data']
-                    
-                    symbol = payload.get('symbol')
-                    bid = payload.get('bid1Price') 
-                    ask = payload.get('ask1Price')  
-                    
-                    if symbol and bid and ask and symbol in shared_data:
-                        if 'bid1Price' in payload:
-                            shared_data[symbol]["Bybit"]["bid"] = float(bid)
-                        if 'ask1Price' in payload:
-                            shared_data[symbol]["Bybit"]["ask"] = float(ask)
-                        # print(f"[Bybit] {symbol}: bid={bid} ask={ask}")
-                    # else:
-                    #     # Debug missing data
-                    #     print(f"[Bybit DEBUG] Symbol: {symbol}, bid1Price: {bid}, ask1Price: {ask}")
-                    #     print(f"[Bybit DEBUG] Available fields: {list(payload.keys())}")
+    """Bybit WebSocket with error handling and reconnection"""
+    reconnect_count = 0
+    
+    while reconnect_count < MAX_RECONNECT_ATTEMPTS:
+        try:
+            uri = "wss://stream.bybit.com/v5/public/linear"
+            print(f"[Bybit] Connecting... (attempt {reconnect_count + 1})")
+            
+            async with websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10
+            ) as ws:
+                params = [f"tickers.{symbol}" for symbol in symbols]
+                subscribe_msg = {
+                    "op": "subscribe",
+                    "args": params
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                print(f"[Bybit] Connected and subscribed successfully")
+                reconnect_count = 0
+                
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                        envelope = json.loads(msg)
                         
-            except Exception as e:
-                print(f"[Bybit ERROR] {e}")
-                await asyncio.sleep(1)
-
-# -------- Bitget --------
-async def bitget_ws():
-    uri = "wss://ws.bitget.com/v2/ws/public"
-    async with websockets.connect(uri) as ws:
-        subscribe_msg = {
-            "op": "subscribe",
-            "args": [{
-                "instType": "USDT-FUTURES",
-                "channel": "ticker",
-                "instId": symbol
-            }for symbol in symbols]
-        }
-        await ws.send(json.dumps(subscribe_msg))
-
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            if 'data' in data and len(data['data']) > 0:
-                item = data['data'][0]
-                bid = item.get('bidPr')
-                ask = item.get('askPr')
-                symbol = item['instId']
-                if symbol in shared_data:
-                    shared_data[symbol]["Bitget"]["bid"] = float(bid)
-                    shared_data[symbol]["Bitget"]["ask"] = float(ask)
-                # print(f"[Bitget]  BTCUSDT: bid={bid} ask={ask}")
-
-# -------- OKX --------
-async def okx_ws():
-    uri = "wss://ws.okx.com:8443/ws/v5/public"
-    async with websockets.connect(uri) as ws:
+                        if 'data' in envelope and envelope.get('topic', '').startswith('tickers.'):
+                            payload = envelope['data']
+                            symbol = payload.get('symbol')
+                            bid = payload.get('bid1Price') 
+                            ask = payload.get('ask1Price')  
+                            
+                            if symbol and bid and ask and symbol in shared_data:
+                                shared_data[symbol]["Bybit"]["bid"] = float(bid)
+                                shared_data[symbol]["Bybit"]["ask"] = float(ask)
+                                
+                    except asyncio.TimeoutError:
+                        print(f"[Bybit] No data received for 30s, checking connection...")
+                        await ws.ping()
+                        continue
+                    except json.JSONDecodeError as e:
+                        print(f"[Bybit] JSON decode error: {e}")
+                        continue
+                        
+        except (ConnectionClosedError, ConnectionClosedOK) as e:
+            print(f"[Bybit] Connection closed: {e}")
+        except InvalidStatusCode as e:
+            print(f"[Bybit] Invalid status code: {e}")
+        except OSError as e:
+            print(f"[Bybit] Network error: {e}")
+        except Exception as e:
+            print(f"[Bybit] Unexpected error: {e}")
         
-        subscribe_msg = {
-            "op": "subscribe",
-            "args": [{
-                "channel": "tickers",
-                "instId": symbol
-            }for symbol in okx_symbols]
-        }
-        await ws.send(json.dumps(subscribe_msg))
+        reconnect_count += 1
+        if reconnect_count < MAX_RECONNECT_ATTEMPTS:
+            print(f"[Bybit] Reconnecting in {RECONNECT_DELAY}s...")
+            await asyncio.sleep(RECONNECT_DELAY)
+        else:
+            print(f"[Bybit] Max reconnection attempts reached, giving up")
+            break
 
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            if 'data' in data and len(data['data']) > 0:
-                item = data['data'][0]
-                bid = item.get('bidPx')
-                ask = item.get('askPx')
-                symbol = item['instId'].replace('-SWAP','').replace('-','')
-                if symbol in shared_data:
-                    shared_data[symbol]["OKX"]["bid"] = float(bid)
-                    shared_data[symbol]["OKX"]["ask"] = float(ask)
-                # print(f"[OKX]     BTC-USDT: bid={bid} ask={ask}")
+async def bitget_ws():
+    """Bitget WebSocket with error handling and reconnection"""
+    reconnect_count = 0
+    
+    while reconnect_count < MAX_RECONNECT_ATTEMPTS:
+        try:
+            uri = "wss://ws.bitget.com/v2/ws/public"
+            print(f"[Bitget] Connecting... (attempt {reconnect_count + 1})")
+            
+            async with websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10
+            ) as ws:
+                subscribe_msg = {
+                    "op": "subscribe",
+                    "args": [{
+                        "instType": "USDT-FUTURES",
+                        "channel": "ticker",
+                        "instId": symbol
+                    } for symbol in symbols]
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                print(f"[Bitget] Connected and subscribed successfully")
+                reconnect_count = 0
+                
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                        data = json.loads(msg)
+                        
+                        if 'data' in data and len(data['data']) > 0:
+                            item = data['data'][0]
+                            bid = item.get('bidPr')
+                            ask = item.get('askPr')
+                            symbol = item['instId']
+                            async with lock:
+                                if bid and ask and symbol in shared_data:
+                                    shared_data[symbol]["Bitget"]["bid"] = float(bid)
+                                    shared_data[symbol]["Bitget"]["ask"] = float(ask)
+                                
+                    except asyncio.TimeoutError:
+                        print(f"[Bitget] No data received for 30s, checking connection...")
+                        await ws.ping()
+                        continue
+                    except json.JSONDecodeError as e:
+                        print(f"[Bitget] JSON decode error: {e}")
+                        continue
+                        
+        except (ConnectionClosedError, ConnectionClosedOK) as e:
+            print(f"[Bitget] Connection closed: {e}")
+        except InvalidStatusCode as e:
+            print(f"[Bitget] Invalid status code: {e}")
+        except OSError as e:
+            print(f"[Bitget] Network error: {e}")
+        except Exception as e:
+            print(f"[Bitget] Unexpected error: {e}")
+        
+        reconnect_count += 1
+        if reconnect_count < MAX_RECONNECT_ATTEMPTS:
+            print(f"[Bitget] Reconnecting in {RECONNECT_DELAY}s...")
+            await asyncio.sleep(RECONNECT_DELAY)
+        else:
+            print(f"[Bitget] Max reconnection attempts reached, giving up")
+            break
+
+async def okx_ws():
+    """OKX WebSocket with error handling and reconnection"""
+    reconnect_count = 0
+    
+    while reconnect_count < MAX_RECONNECT_ATTEMPTS:
+        try:
+            uri = "wss://ws.okx.com:8443/ws/v5/public"
+            print(f"[OKX] Connecting... (attempt {reconnect_count + 1})")
+            
+            async with websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10
+            ) as ws:
+                subscribe_msg = {
+                    "op": "subscribe",
+                    "args": [{
+                        "channel": "tickers",
+                        "instId": symbol
+                    } for symbol in okx_symbols]
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                print(f"[OKX] Connected and subscribed successfully")
+                reconnect_count = 0
+                
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                        data = json.loads(msg)
+                        
+                        if 'data' in data and len(data['data']) > 0:
+                            item = data['data'][0]
+                            bid = item.get('bidPx')
+                            ask = item.get('askPx')
+                            symbol = item['instId'].replace('-SWAP','').replace('-','')
+                            
+                            if bid and ask and symbol in shared_data:
+                                shared_data[symbol]["OKX"]["bid"] = float(bid)
+                                shared_data[symbol]["OKX"]["ask"] = float(ask)
+                                
+                    except asyncio.TimeoutError:
+                        print(f"[OKX] No data received for 30s, checking connection...")
+                        await ws.ping()
+                        continue
+                    except json.JSONDecodeError as e:
+                        print(f"[OKX] JSON decode error: {e}")
+                        continue
+                        
+        except (ConnectionClosedError, ConnectionClosedOK) as e:
+            print(f"[OKX] Connection closed: {e}")
+        except InvalidStatusCode as e:
+            print(f"[OKX] Invalid status code: {e}")
+        except OSError as e:
+            print(f"[OKX] Network error: {e}")
+        except Exception as e:
+            print(f"[OKX] Unexpected error: {e}")
+        
+        reconnect_count += 1
+        if reconnect_count < MAX_RECONNECT_ATTEMPTS:
+            print(f"[OKX] Reconnecting in {RECONNECT_DELAY}s...")
+            await asyncio.sleep(RECONNECT_DELAY)
+        else:
+            print(f"[OKX] Max reconnection attempts reached, giving up")
+            break
+
+# Optional: Add a connection status monitoring function
+def get_connection_status():
+    """Get status of all exchange connections"""
+    status = {}
+    for exchange in ['Binance', 'OKX', 'Bitget', 'Bybit']:
+        # Check if we have recent data from this exchange
+        recent_data_count = 0
+        for symbol in symbols[:10]: 
+            if symbol in shared_data:
+                if (shared_data[symbol][exchange]['bid'] is not None and 
+                    shared_data[symbol][exchange]['ask'] is not None):
+                    recent_data_count += 1
+    
+        status[exchange] = {
+            'connected': recent_data_count > 5,  # Consider connected if >5 symbols have data
+            'data_count': recent_data_count
+        }
+    return status
 
 async def compute_strategy():
     """
@@ -334,9 +537,15 @@ async def compute_strategy():
         
         for symbol, exchange_data in snapshot.items():
             opportunity = calculate_opportunity(symbol,exchange_data)
-            if opportunity is not None and opportunity['open_spread_pct'] >= MINIMUM_SPREAD_PCT and opportunity['open_spread_pct'] > max_spread:
+            if opportunity is not None and opportunity['open_spread_pct'] > max_spread:
                 max_spread = opportunity['open_spread_pct']
-                await strategy_results_queue.put(opportunity)
+                best_strategy = opportunity
+        if best_strategy is not None:
+            decision_id = await get_next_decision_id()
+            best_strategy['decision_id'] = decision_id
+            decision_logger.info(f"决策id:{decision_id}, 检测到当前最大价差值{best_strategy['open_spread']}, 价差比{best_strategy['open_spread_pct']}, 货币种类: {best_strategy['symbol']}, 买价: {best_strategy['best_buy_price']}@{best_strategy['best_buy_exchange']}, 卖价{best_strategy['best_sell_price']}@{best_strategy['best_sell_exchange']}, 订单数额详情：{best_strategy['quotes']}")
+            decision_id +=1
+            await strategy_results_queue.put(best_strategy)
         await asyncio.sleep(COMPUTE_INTERVAL)
 
 
@@ -418,6 +627,7 @@ def enrich_with_costs_and_profits(opportunity):
             # 'profit_pct': profit_pct,
             'time_stamp_opportunity': opportunity['time_stamp_opportunity'],
             'stop_loss': -abs(estimated_net_profit * STOP_LOSS_PCT),
+            'decision_id' :opportunity['decision_id']
              }
     return enriched
 
@@ -428,6 +638,8 @@ def open_position(enrich_trade):
     trade_history.append(enrich_trade)
     active_trades.append(enrich_trade)
     opening_positions += 1
+    decision_logger.info(f"决策id: {enrich_trade['decision_id']} 开仓成功")
+    output_logger.info(f"开仓：货币种类：{enrich_trade['symbol']}，购买交易所：{enrich_trade['best_buy_exchange']}，购买价：{enrich_trade['best_buy_price']}，出售交易所：{enrich_trade['best_sell_exchange']}，出售价：{enrich_trade['best_sell_price']}，价差：{enrich_trade['open_spread']}，价差比：{enrich_trade['open_spread_pct']}")
 
 def calculate_open_costs(buy_exchange, sell_exchange, buy_price, sell_price, trade_amount):
     """Calculate costs to OPEN arbitrage position
@@ -475,13 +687,15 @@ def calculate_exit_costs(buy_exchange,sell_exchange,current_buy_price,current_se
 
 def should_open_position(enrich_trade):
     global opening_positions
-    if opening_positions <= MAX_POSITION_SIZE:
+    decision_logger.info(f"决策 id: {enrich_trade['decision_id']} 被接受，准备开仓")
         # logic about balance on those exchange...
         # TODO
-        if enrich_trade['estimated_net_profit_pct'] >= MINIMUM_PROFIT_PCT:
-            # and some logic about margin
-            # print("we should open position")
-            return True
+        # if enrich_trade['estimated_net_profit_pct'] >= MINIMUM_PROFIT_PCT:
+    if enrich_trade['estimated_net_profit_pct'] >= 0:
+
+        # and some logic about margin
+        # print("we should open position")
+        return True
         
     # print(f"not an opportunity:{enrich_trade}")
     return False
@@ -510,8 +724,7 @@ def evaluate_active_position(trade,snapshot):
     position_age = time.time() - trade['trade_time']
     current_spread = current_sell_price - current_buy_price
     #unrealized_pnl
-
-    # should close? = profit evaluation + risk management
+ 
     if position_age > MAX_HOLDING_TIME:
         return True
     entry_net = trade['net_entry']
@@ -525,22 +738,23 @@ def evaluate_active_position(trade,snapshot):
             'exit_costs': exit_costs,
             'position_age': position_age,
             'current_buy_price': current_buy_price,
-            'current_sell_price': current_sell_price
+            'current_sell_price': current_sell_price,
+            'decision_id': decision_id,
             }
 
 def should_close_position(trade,current_status):
-    unrealized_pnl_pct = current_status['unrealized_pnl']/trade['best_buy_price'] * trade['trade_amount']
-    if unrealized_pnl_pct >= trade['estimated_net_profit_pct']*0.3:
-        # print("close trade because earned enough")
+    unrealized_pnl_pct = current_status['unrealized_pnl']/(trade['best_buy_price'] * trade['trade_amount'])
+    # if unrealized_pnl_pct >= trade['estimated_net_profit_pct']* 0.7:
+    if unrealized_pnl_pct >= 0.001:
+        decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止盈, 相关数据：")
         return True
     # execute close position or do nothing
 
-    
     if unrealized_pnl_pct <= STOP_LOSS_PCT:
-        print("close trade because of stop loss")
+        decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止损, 相关数据：")
+
         return True
 
-    print("holding position")
     return False
 
 def determine_exit_reason(trade,current_status):
@@ -553,12 +767,20 @@ def close_position(trade,current_status):
         'action': 'close',
         'close_time': time.time(),
         'pnl': current_status['unrealized_pnl'],
-        'exit_reason': determine_exit_reason(trade,current_status)})
+        'exit_reason': determine_exit_reason(trade,current_status),
+        'decision_id': current_status['decision_id']})
     trade_history.append(trade)
     active_trades.pop()
     opening_positions -= 1
+    decision_logger.info(f"决策id: {current_status['decision_id']}, 平仓成功， 相关数据")
+    current_spread = current_status['current_sell_price'] - current_status['current_buy_price']
+    current_spread_pct = current_spread / current_status['current_buy_price']
 
+    output_logger.info(
+        f"平仓: 决策id: {current_status['decision_id']}, 货币种类: {trade['symbol']}，平仓（卖出）交易所: {trade['best_buy_exchange']}, 平仓（卖出）价: {current_status['current_buy_price']}, 出售交易所：{trade['best_sell_exchange']}，平仓价：{current_status['current_sell_price']}，原始价差：{trade['open_spread']}，原始价差比：{trade['open_spread_pct']}，当前价差：{current_spread:.2f}，当前价差比：{current_spread_pct:.4f}，最终收益：{trade['pnl']:.2f}"
+    )
 async def execute_simulation():
+    output_logger.info(f"开始模拟")
     global active_trades, trade_history, opening_positions
     print("[SIMULATION] Simulation starts")
 
@@ -569,9 +791,10 @@ async def execute_simulation():
         enrich_trade = enrich_with_costs_and_profits(opportunity)
 
         async with lock:
-            if should_open_position(enrich_trade):
+            if opening_positions < MAX_POSITION_SIZE and should_open_position(enrich_trade):
                 open_position(enrich_trade)
 
+        async with lock:
             if opening_positions < 0:
                 raise ValueError('opening_positions cannot be negative')
             
@@ -579,9 +802,9 @@ async def execute_simulation():
                 print("lol race condition")
             # handle active positions
             if len(active_trades) > 0:
+
                 # this should be equivalent to opening_positions == 0
-                async with lock:
-                    snapshot = copy.deepcopy(shared_data)
+                snapshot = copy.deepcopy(shared_data)
                 trade = active_trades[0]
                 current_status = evaluate_active_position(trade,snapshot)
                 if current_status and should_close_position(trade,current_status):
@@ -625,7 +848,7 @@ if __name__ == '__main__':
     }
     SLIPPAGE_RATE = 0.0005
     COMPUTE_INTERVAL = 1
-    MINIMUM_PROFIT_PCT = 0
+    MINIMUM_PROFIT_PCT = 0.0025
 
     TRADE_AMOUNT_USDT = 1000    # 每次套利的金额
     MAX_POSITION_SIZE = 1   # 最大持仓限制
@@ -636,13 +859,12 @@ if __name__ == '__main__':
         'Bitget': 10000
 }
     MAX_HOLDING_TIME = 300      # 最大持仓时间(秒)
-    STOP_LOSS_PCT = -0.01       # 止损百分比
+    STOP_LOSS_PCT = -0.002       # 止损百分比
     MAX_CONCURRENT_TRADES = 1   # 最大同时进行的套利数量
     MINIMUM_SPREAD_PCT = 0.0002
     active_trades = []
     trade_history = []
 
-    # initialize shared_data
     exchanges = ['Binance', 'OKX', 'Bitget', 'Bybit']
     symbols = get_common_symbols()
     okx_symbols = [symbol.replace('USDT','-USDT').replace('USDT','USDT-SWAP') for symbol in symbols]
@@ -652,7 +874,6 @@ if __name__ == '__main__':
     }
     strategy_results_queue = asyncio.Queue()
     # initialize lock for thread safety
-    lock = asyncio.Lock() 
     opening_positions = 0
 
     asyncio.run(main())
