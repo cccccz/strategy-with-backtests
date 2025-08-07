@@ -198,7 +198,7 @@ async def display_terminal():
         display_exchange_data()
         display_trade_history()  # Add this line
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"opening: {opening_positions}")
+        await asyncio.sleep(1)
 
 
 # -------- Binance --------

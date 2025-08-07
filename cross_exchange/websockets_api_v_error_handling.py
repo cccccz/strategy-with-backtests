@@ -11,7 +11,11 @@ import pandas as pd
 from functools import wraps
 import logging
 from datetime import datetime
-
+import asyncio
+import json
+import websockets
+import time
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidStatusCode
 # 设置日志格式
 log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
@@ -236,11 +240,7 @@ async def display_terminal():
         await asyncio.sleep(1)
 
 
-import asyncio
-import json
-import websockets
-import time
-from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidStatusCode
+
 
 # Add these constants at the top of your file
 MAX_RECONNECT_ATTEMPTS = 5
@@ -639,7 +639,7 @@ def open_position(enrich_trade):
     active_trades.append(enrich_trade)
     opening_positions += 1
     decision_logger.info(f"决策id: {enrich_trade['decision_id']} 开仓成功")
-    output_logger.info(f"开仓：货币种类：{enrich_trade['symbol']}，购买交易所：{enrich_trade['best_buy_exchange']}，购买价：{enrich_trade['best_buy_price']}，出售交易所：{enrich_trade['best_sell_exchange']}，出售价：{enrich_trade['best_sell_price']}，价差：{enrich_trade['open_spread']}，价差比：{enrich_trade['open_spread_pct']}")
+    output_logger.info(f"开仓：决策id: {enrich_trade['decision_id']}, 货币种类：{enrich_trade['symbol']}，购买交易所：{enrich_trade['best_buy_exchange']}，购买价：{enrich_trade['best_buy_price']}，出售交易所：{enrich_trade['best_sell_exchange']}，出售价：{enrich_trade['best_sell_price']}，价差：{enrich_trade['open_spread']}，价差比：{enrich_trade['open_spread_pct']}")
 
 def calculate_open_costs(buy_exchange, sell_exchange, buy_price, sell_price, trade_amount):
     """Calculate costs to OPEN arbitrage position
@@ -786,6 +786,7 @@ async def execute_simulation():
 
     while True:
     # await handle_new_opportunities()
+    # TODO
         opportunity = await strategy_results_queue.get()
         # print("Evaluating the strategy from strategy_results_queue")
         enrich_trade = enrich_with_costs_and_profits(opportunity)
