@@ -150,6 +150,45 @@ def get_common_symbols():
     common_symbols = set(reduce(lambda x, y:set(x) & set(y), name_lists))
     return list(common_symbols)
 
-if __name__ == '__main__':
+def fetch_funding_rates(exchange, symbols, market_type="futures_p"):
+    """获取交易所支持的所有交易对（现货或合约）"""
+    suffix = None
+    result = []
+    data = None
+    if exchange == "binance":
+        url = "https://fapi.binance.com/fapi/v1/fundingRate"
+        params = {"symbol":symbol for symbol in symbols}
+        data = requests.get(url).json()
 
-    print("hello world!")
+    elif exchange == "bybit":
+        url = "https://api.bybit.com/v5/market/funding/history"
+        params= {"category":'linear','symbol':",".join(symbols),'limit':1}
+        data = requests.get(url,params).json()
+        
+
+    elif exchange == "okx":
+        url = "https://www.okx.com/api/v5/public/funding-rate"
+        params = {'instId':"ANY"}
+        data = requests.get(url,params=params).json()
+
+    elif exchange == "bitget":
+        url =  "https://api.bitget.com/api/v2/mix/market/current-fund-rate"
+        params = {"symbol": ",".join(symbols)}
+        data = requests.get(url,params).json()
+    else:
+        raise ValueError("Unsupported exchange")
+    
+    if data:
+        print(data)
+    if result:
+        print(result)
+        print(len(result))
+    return result
+
+
+if __name__ == '__main__':
+    symbols = get_common_symbols()
+    okx_symbols = [symbol.replace('USDT','-USDT').replace('USDT','USDT-SWAP') for symbol in symbols]
+    # funding_rate = fetch_funding_rates('bitget',symbols,'futures_p')
+
+    # funding_rate = fetch_funding_rates('okx',okx_symbols,'futures_p')

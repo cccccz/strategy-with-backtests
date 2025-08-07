@@ -1,5 +1,3 @@
-# perf_utils.py
-
 import time
 import functools
 import asyncio
@@ -10,7 +8,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("perf")
+logger = logging.getLogger()
 
 
 def timeit(func):
@@ -26,15 +24,16 @@ def timeit(func):
 
 
 def async_timeit(func):
-    """decoration for asyn"""
-    @functools.wraps(func)
+    """Decorator to time async functions"""
     async def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        result = await func(*args, **kwargs)
-        duration = (time.perf_counter() - start) * 1000  # ms
-        logger.info(f"[AsyncTimeIt] {func.__name__} took {duration:.3f} ms")
+        start = time.perf_counter()  # Record the start time
+        logger.info(f"Starting execution of {func.__name__}")  # Debug message
+        result = await func(*args, **kwargs)  # Execute the async function
+        duration = (time.perf_counter() - start) * 1000  # Time in milliseconds
+        logger.info(f"[AsyncTimeIt] {func.__name__} took {duration:.3f} ms")  # Log the time taken
         return result
     return wrapper
+
 
 
 def log_duration(name="block"):
