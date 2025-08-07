@@ -54,16 +54,16 @@ def display_trade():
         print("-" * 50)
 
 def display_trade_history():
-    """Display formatted trade history showing key information"""
-    global trade_history
+    """Display formatted trade history showing key information with current prices for open positions"""
+    global trade_history, shared_data
     
     if not trade_history:
         print("No trade history available.")
         return
     
-    print("\n" + "="*120)
+    print("\n" + "="*140)
     print("TRADE HISTORY")
-    print("="*120)
+    print("="*140)
     
     # Group trades by pairs (open + close)
     trade_pairs = []
@@ -92,30 +92,47 @@ def display_trade_history():
         trade_pairs.append((open_trade, None))
     
     # Display header
-    print(f"{'#':<3} {'Symbol':<12} {'Buy Exchange':<12} {'Buy Price':<12} {'Sell Exchange':<12} {'Sell Price':<12} {'Open Time':<20} {'Close Time':<20} {'PnL':<15} {'Status':<10}")
-    print("-" * 120)
+    print(f"{'#':<3} {'Symbol':<12} {'Buy@':<20} {'Sell@':<20} {'Open Time':<20} {'Close Time':<20} {'PnL':<15} {'Status':<10}")
+    print("-" * 140)
     
     # Display each trade pair
     for i, (open_trade, close_trade) in enumerate(trade_pairs, 1):
         symbol = open_trade['symbol']
         buy_exchange = open_trade['best_buy_exchange']
-        buy_price = f"{open_trade['best_buy_price']:.6f}"
-        sell_exchange = open_trade['best_sell_exchange'] 
-        sell_price = f"{open_trade['best_sell_price']:.6f}"
+        sell_exchange = open_trade['best_sell_exchange']
         
         # Format timestamps
-        open_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(open_trade['trade_time']))
+        open_time = time.strftime('%m-%d %H:%M:%S', time.localtime(open_trade['trade_time']))
         
         if close_trade:
-            close_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(close_trade['close_time']))
+            # Closed trade - show original prices
+            buy_info = f"{buy_exchange[:3]}@{open_trade['best_buy_price']:.6f}"
+            sell_info = f"{sell_exchange[:3]}@{open_trade['best_sell_price']:.6f}"
+            close_time = time.strftime('%m-%d %H:%M:%S', time.localtime(close_trade['close_time']))
             pnl = f"{close_trade['pnl']:.8f}"
             status = "CLOSED"
         else:
+            # Open trade - show original/current prices
+            original_buy = open_trade['best_buy_price']
+            original_sell = open_trade['best_sell_price']
+            
+            # Get current prices
+            current_buy_price = "N/A"
+            current_sell_price = "N/A"
+            
+            if symbol in shared_data:
+                if shared_data[symbol][buy_exchange]['ask']:
+                    current_buy_price = f"{shared_data[symbol][buy_exchange]['ask']:.6f}"
+                if shared_data[symbol][sell_exchange]['bid']:
+                    current_sell_price = f"{shared_data[symbol][sell_exchange]['bid']:.6f}"
+            
+            buy_info = f"{buy_exchange[:3]}@{original_buy:.6f}/{current_buy_price}"
+            sell_info = f"{sell_exchange[:3]}@{original_sell:.6f}/{current_sell_price}"
             close_time = "OPEN"
             pnl = f"{open_trade['estimated_net_profit']:.8f}"
             status = "OPEN"
         
-        print(f"{i:<3} {symbol:<12} {buy_exchange:<12} {buy_price:<12} {sell_exchange:<12} {sell_price:<12} {open_time:<20} {close_time:<20} {pnl:<15} {status:<10}")
+        print(f"{i:<3} {symbol:<12} {buy_info:<20} {sell_info:<20} {open_time:<20} {close_time:<20} {pnl:<15} {status:<10}")
     
     # Summary statistics
     closed_trades = [pair for pair in trade_pairs if pair[1] is not None]
@@ -124,10 +141,56 @@ def display_trade_history():
         avg_pnl = total_pnl / len(closed_trades)
         profitable_trades = len([pair for pair in closed_trades if pair[1]['pnl'] > 0])
         
-        print("-" * 120)
+        print("-" * 140)
         print(f"SUMMARY: Total Trades: {len(closed_trades)} | Profitable: {profitable_trades} | Total PnL: {total_pnl:.8f} | Avg PnL: {avg_pnl:.8f}")
     
-    print("=" * 120)
+    print("=" * 140)
+
+# 同样更新 compact 版本
+def display_trade_history_compact():
+    """Compact version showing only recent trades with current prices"""
+    global trade_history, shared_data
+    
+    if not trade_history:
+        return
+    
+    print(f"\nRECENT TRADES (Last 5):")
+    print(f"{'Symbol':<10} {'Buy@':<20} {'Sell@':<20} {'PnL':<12} {'Status':<8}")
+    print("-" * 75)
+    
+    # Get recent trades (both open and close)
+    recent_trades = trade_history[-5:]
+    
+    for trade in recent_trades:
+        symbol = trade['symbol']
+        buy_exchange = trade['best_buy_exchange']
+        sell_exchange = trade['best_sell_exchange']
+        
+        if trade['action'] == 'close':
+            # Closed trade
+            buy_info = f"{buy_exchange[:3]}@{trade['best_buy_price']:.4f}"
+            sell_info = f"{sell_exchange[:3]}@{trade['best_sell_price']:.4f}"
+            pnl = f"{trade['pnl']:.6f}"
+            status = "CLOSED"
+        else:
+            # Open trade - show current prices
+            original_buy = trade['best_buy_price']
+            original_sell = trade['best_sell_price']
+            
+            current_buy = "N/A"
+            current_sell = "N/A"
+            if symbol in shared_data:
+                if shared_data[symbol][buy_exchange]['ask']:
+                    current_buy = f"{shared_data[symbol][buy_exchange]['ask']:.4f}"
+                if shared_data[symbol][sell_exchange]['bid']:
+                    current_sell = f"{shared_data[symbol][sell_exchange]['bid']:.4f}"
+            
+            buy_info = f"{buy_exchange[:3]}@{original_buy:.4f}/{current_buy}"
+            sell_info = f"{sell_exchange[:3]}@{original_sell:.4f}/{current_sell}"
+            pnl = f"{trade['estimated_net_profit']:.6f}"
+            status = "OPENED"
+        
+        print(f"{symbol:<10} {buy_info:<20} {sell_info:<20} {pnl:<12} {status:<8}")
 
 # Update your display_terminal function to include this:
 async def display_terminal():
@@ -137,34 +200,7 @@ async def display_terminal():
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         await asyncio.sleep(1)
 
-def display_trade_history_compact():
-    """Compact version showing only recent trades"""
-    global trade_history
-    
-    if not trade_history:
-        return
-    
-    # Show only last 5 completed trade pairs
-    print(f"\nRECENT TRADES (Last 5):")
-    print(f"{'Symbol':<10} {'Buy@':<15} {'Sell@':<15} {'PnL':<12} {'Status':<8}")
-    print("-" * 58)
-    
-    # Get recent trades (both open and close)
-    recent_trades = trade_history[-10:]  # Get last 10 entries
-    
-    for trade in recent_trades:
-        symbol = trade['symbol']
-        buy_info = f"{trade['best_buy_exchange'][:3]}@{trade['best_buy_price']:.4f}"
-        sell_info = f"{trade['best_sell_exchange'][:3]}@{trade['best_sell_price']:.4f}"
-        
-        if trade['action'] == 'close':
-            pnl = f"{trade['pnl']:.6f}"
-            status = "CLOSED"
-        else:
-            pnl = f"{trade['estimated_net_profit']:.6f}"
-            status = "OPENED"
-        
-        print(f"{symbol:<10} {buy_info:<15} {sell_info:<15} {pnl:<12} {status:<8}")
+
 # -------- Binance --------
 
 async def binance_ws():
