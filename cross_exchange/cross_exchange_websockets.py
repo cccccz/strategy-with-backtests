@@ -16,20 +16,20 @@ import json
 import websockets
 import time
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidStatusCode
-from config_copy import Config
+from config import Config
 
 # 日志设置
 log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
 decision_logger = logging.getLogger('decision_logger')
 decision_logger.setLevel(logging.INFO)
-decision_handler = logging.FileHandler('./cross_exchange/decision_log.txt')
+decision_handler = logging.FileHandler('decision_log.txt')
 decision_handler.setFormatter(logging.Formatter(log_format))
 decision_logger.addHandler(decision_handler)
 
 output_logger = logging.getLogger('output_logger')
 output_logger.setLevel(logging.INFO)
-output_handler = logging.FileHandler('./cross_exchange/output_log.txt')
+output_handler = logging.FileHandler('output_log.txt')
 output_handler.setFormatter(logging.Formatter(log_format))
 output_logger.addHandler(output_handler)
 
@@ -40,48 +40,12 @@ class TradingState:
         self.active_trades = []
         self.trade_history = []
         self.opening_positions = 0
+        self.strategy_results_queue = asyncio.Queue()
         self.lock = asyncio.Lock()
         self.decision_id = 0
         self.decision_id_lock = asyncio.Lock()
         self.symbols = []
         self.okx_symbols = []
-        self.latest_opportunity = None
-        self.opportunity_lock = asyncio.Lock()
-
-        # 资金管理
-        self.initial_capital = Config.INITIAL_CAPITAL
-        self.exchange_balances = {}
-        self.total_balance = Config.INITIAL_CAPITAL
-        self.total_pnl = 0.0
-        self.balance_lock = asyncio.Lock()
-
-    def init_exchange_balances(self):
-        """初始化各交易所资金分配"""
-        for exchange, allocation in Config.EXCHANGE_CAPITAL_ALLOCATION.items():
-            self.exchange_balances[exchange] = {
-                'available': self.initial_capital * allocation,
-                'used': 0.0,
-                'total': self.initial_capital * allocation
-            }
-    
-    def get_available_capital(self, exchange):
-        """获取指定交易所的可用资金"""
-        return self.exchange_balances[exchange]['available']
-    
-    def calculate_trade_amount(self, buy_exchange, buy_price, sell_exchange, sell_price):
-        buy_available = self.get_available_capital(buy_exchange)
-        sell_available = self.get_available_capital(sell_exchange)
-
-        # max_trade_capital = available_capital * Config.MAX_TRADE_CAPITAL_PCY
-
-        # if max_trade_capital < Config.MIN_TRADE_AMOUNT:
-        #     return 0.0
-        
-        buy_amount = buy_available / buy_price
-        sell_amount = sell_available / sell_price
-        trade_amount = min(buy_amount, sell_amount)
-        return trade_amount
-
     
     async def get_next_decision_id(self):
         async with self.decision_id_lock:
@@ -136,15 +100,15 @@ def display_trade_history(state):
     if not state.trade_history:
         print("No trade history available.")
         return
-
+    
     print("\n" + "="*140)
     print("TRADE HISTORY")
     print("="*140)
-
+    
     # 分组显示交易对
     trade_pairs = []
     open_trades = {}
-
+    
     for trade in state.trade_history:
         if trade['action'] == 'open':
             open_trades[trade['time_stamp_opportunity']] = trade
@@ -156,110 +120,70 @@ def display_trade_history(state):
                     open_trade['best_sell_exchange'] == trade['best_sell_exchange']):
                     matching_open = open_trade
                     break
-
+            
             if matching_open:
                 trade_pairs.append((matching_open, trade))
                 del open_trades[timestamp]
-
+    
     # 添加未平仓的交易
     for open_trade in open_trades.values():
         trade_pairs.append((open_trade, None))
-
+    
     # 显示表头
-    print(f"{'#':<3} {'Symbol':<12} {'Buy@':<25} {'Sell@':<25} {'Open Time':<20} {'Close Time':<20} {'PnL':<15} {'Status':<10}")
+    print(f"{'#':<3} {'Symbol':<12} {'Buy@':<20} {'Sell@':<20} {'Open Time':<20} {'Close Time':<20} {'PnL':<15} {'Status':<10}")
     print("-" * 140)
-
+    
     # 显示每个交易对
     for i, (open_trade, close_trade) in enumerate(trade_pairs, 1):
         symbol = open_trade['symbol']
-        buy_ex = open_trade['best_buy_exchange']
-        sell_ex = open_trade['best_sell_exchange']
-
+        buy_exchange = open_trade['best_buy_exchange']
+        sell_exchange = open_trade['best_sell_exchange']
+        
         open_time = time.strftime('%m-%d %H:%M:%S', time.localtime(open_trade['trade_time']))
-
-        # 初始开仓价格
-        open_buy_price = open_trade['best_buy_price']
-        open_sell_price = open_trade['best_sell_price']
-
+        
         if close_trade:
+            buy_info = f"{buy_exchange[:3]}@{open_trade['best_buy_price']:.6f}"
+            sell_info = f"{sell_exchange[:3]}@{open_trade['best_sell_price']:.6f}"
             close_time = time.strftime('%m-%d %H:%M:%S', time.localtime(close_trade['close_time']))
             pnl = f"{close_trade['pnl']:.8f}"
             status = "CLOSED"
-
-            # 如果记录了平仓价格，用于显示（否则设为 N/A）
-            close_buy_price = close_trade.get('current_buy_price', 'N/A')
-            close_sell_price = close_trade.get('current_sell_price', 'N/A')
-
-            # 格式化价格信息：开仓价 / 平仓价
-            if isinstance(close_buy_price, float):
-                buy_info = f"{buy_ex[:3]}@{open_buy_price:.6f}/{close_buy_price:.6f}"
-            else:
-                buy_info = f"{buy_ex[:3]}@{open_buy_price:.6f}/N/A"
-
-            if isinstance(close_sell_price, float):
-                sell_info = f"{sell_ex[:3]}@{open_sell_price:.6f}/{close_sell_price:.6f}"
-            else:
-                sell_info = f"{sell_ex[:3]}@{open_sell_price:.6f}/N/A"
-
         else:
+            original_buy = open_trade['best_buy_price']
+            original_sell = open_trade['best_sell_price']
+            
+            current_buy_price = "N/A"
+            current_sell_price = "N/A"
+            
+            if symbol in state.shared_data:
+                if state.shared_data[symbol][buy_exchange]['ask']:
+                    current_buy_price = f"{state.shared_data[symbol][buy_exchange]['ask']:.6f}"
+                if state.shared_data[symbol][sell_exchange]['bid']:
+                    current_sell_price = f"{state.shared_data[symbol][sell_exchange]['bid']:.6f}"
+            
+            buy_info = f"{buy_exchange[:3]}@{original_buy:.6f}/{current_buy_price}"
+            sell_info = f"{sell_exchange[:3]}@{original_sell:.6f}/{current_sell_price}"
             close_time = "OPEN"
             pnl = f"{open_trade['estimated_net_profit']:.8f}"
             status = "OPEN"
-
-            # 使用当前市场价格作为参考
-            current_buy_price = "N/A"
-            current_sell_price = "N/A"
-
-            if symbol in state.shared_data:
-                if state.shared_data[symbol][buy_ex]['ask']:
-                    current_buy_price = f"{state.shared_data[symbol][buy_ex]['ask']:.6f}"
-                if state.shared_data[symbol][sell_ex]['bid']:
-                    current_sell_price = f"{state.shared_data[symbol][sell_ex]['bid']:.6f}"
-
-            buy_info = f"{buy_ex[:3]}@{open_buy_price:.6f}/{current_buy_price}"
-            sell_info = f"{sell_ex[:3]}@{open_sell_price:.6f}/{current_sell_price}"
-
-        print(f"{i:<3} {symbol:<12} {buy_info:<25} {sell_info:<25} {open_time:<20} {close_time:<20} {pnl:<15} {status:<10}")
-
+        
+        print(f"{i:<3} {symbol:<12} {buy_info:<20} {sell_info:<20} {open_time:<20} {close_time:<20} {pnl:<15} {status:<10}")
+    
     # 统计信息
     closed_trades = [pair for pair in trade_pairs if pair[1] is not None]
     if closed_trades:
         total_pnl = sum(close_trade['pnl'] for _, close_trade in closed_trades)
         avg_pnl = total_pnl / len(closed_trades)
         profitable_trades = len([pair for pair in closed_trades if pair[1]['pnl'] > 0])
-
+        
         print("-" * 140)
         print(f"SUMMARY: Total Trades: {len(closed_trades)} | Profitable: {profitable_trades} | Total PnL: {total_pnl:.8f} | Avg PnL: {avg_pnl:.8f}")
-
+    
     print("=" * 140)
-
-def display_balance_info(state):
-    """显示资金信息"""
-    print("\n" + "="*80)
-    print("BALANCE INFORMATION")
-    print("="*80)
-    
-    total_roi = (state.total_pnl / state.initial_capital) * 100
-    
-    print(f"Initial Capital: {state.initial_capital:,.2f} USDT")
-    print(f"Current Balance: {state.total_balance:,.2f} USDT")
-    print(f"Total PnL: {state.total_pnl:,.8f} USDT")
-    print(f"ROI: {total_roi:.4f}%")
-    print("-" * 80)
-    print(f"{'Exchange':<10} {'Total':<12} {'Available':<12} {'Used':<12} {'Utilization':<12}")
-    print("-" * 80)
-    
-    for exchange, balance in state.exchange_balances.items():
-        utilization = (balance['used'] / balance['total']) * 100
-        print(f"{exchange:<10} {balance['total']:<12.2f} {balance['available']:<12.2f} {balance['used']:<12.2f} {utilization:<12.2f}%")
-    
-    print("="*80)
 
 async def display_terminal(state):
     while True:
         display_exchange_data(state)
         display_trade_history(state)
-        display_balance_info(state)
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         await asyncio.sleep(1)
 
@@ -468,9 +392,7 @@ async def compute_strategy(state):
             decision_id = await state.get_next_decision_id()
             best_strategy['decision_id'] = decision_id
             decision_logger.info(f"决策id:{decision_id}, 检测到当前最大价差值{best_strategy['open_spread']}, 价差比{best_strategy['open_spread_pct']}, 货币种类: {best_strategy['symbol']}, 买价: {best_strategy['best_buy_price']}@{best_strategy['best_buy_exchange']}, 卖价{best_strategy['best_sell_price']}@{best_strategy['best_sell_exchange']}")
-            async with state.opportunity_lock:
-                state.latest_opportunity = best_strategy
-
+            await state.strategy_results_queue.put(best_strategy)
             
         await asyncio.sleep(Config.COMPUTE_INTERVAL)
 
@@ -518,11 +440,7 @@ def enrich_with_costs_and_profits(opportunity):
     best_buy = min(quotes, key=lambda x: x[2])
     best_sell = max(quotes, key=lambda x: x[1])
 
-    trade_amount = state.calculate_trade_amount(best_buy[0],best_buy[2],best_sell[0],best_sell[1])
-    # moved this logic to should_open.... if performance issue then bring it back..
-    # if trade_amount <= 0:
-    #     return None
-    trade_capital = trade_amount * best_buy[2]
+    trade_amount = 1
     costs = calculate_open_costs(best_buy[0], best_sell[0], best_buy[2], best_sell[1], trade_amount)
     estimated_close_costs = calculate_exit_costs(best_buy[0], best_sell[0], best_sell[1], best_buy[2], trade_amount)
     total_cost = costs['total_cost'] + estimated_close_costs['total_cost']
@@ -531,7 +449,7 @@ def enrich_with_costs_and_profits(opportunity):
     open_spread_pct = 2 * open_spread / (best_buy[2] + best_sell[1])
     close_spread_pct = 2 * (best_sell[2] - best_buy[1]) / (best_buy[1] + best_sell[2])
 
-    estimated_net_profit = open_spread * trade_amount - total_cost
+    estimated_net_profit = open_spread - total_cost
     estimated_net_profit_pct = estimated_net_profit / best_buy[2]
     margin_required = calculate_required_margin(trade_amount)
     
@@ -544,11 +462,7 @@ def enrich_with_costs_and_profits(opportunity):
         'open_spread': open_spread,
         'open_spread_pct': open_spread_pct,
         'close_spread_pct': close_spread_pct,
-
         'trade_amount': trade_amount,
-        'trade_capital': trade_capital,
-        'capital_utilization_pct': trade_capital/ state.initial_capital,
-
         'margin_required': margin_required,
         'estimated_total_cost': total_cost,
         'buy_fee': costs['buy_fee'],
@@ -562,47 +476,21 @@ def enrich_with_costs_and_profits(opportunity):
     }
     return enriched
 
-# def should_open_position(enrich_trade, state):
-#     """判断是否应该开仓"""
-#     decision_logger.info(f"决策 id: {enrich_trade['decision_id']} 被接受，准备开仓")
-#     if enrich_trade['estimated_net_profit_pct'] >= 0:
-#         return True
-#     return False
-
 def should_open_position(enrich_trade, state):
-    if enrich_trade['trade_amount'] <= 0:
-        return False
-    spread_pct = enrich_trade['open_spread_pct']
-    
-    # if spread_pct >= Config.MAGIC_THRESHOLD:
-    if enrich_trade['estimated_net_profit'] > 0:
-        decision_logger.info(f"✅ 决策 id: {enrich_trade['decision_id']} 满足开仓条件: 'estimated_net_profit': {enrich_trade['estimated_net_profit']}, spread_pct={spread_pct:.6f}")
+    """判断是否应该开仓"""
+    decision_logger.info(f"决策 id: {enrich_trade['decision_id']} 被接受，准备开仓")
+    if enrich_trade['estimated_net_profit_pct'] >= 0:
         return True
-    
-    decision_logger.info(f"⛔️ 决策 id: {enrich_trade['decision_id']} 不满足开仓条件: 'estimated_net_profit': {enrich_trade['estimated_net_profit']}, spread_pct={spread_pct:.6f}")
     return False
 
 def open_position(enrich_trade, state):
     """开仓"""
-    buy_exchange = enrich_trade['best_buy_exchange']
-    sell_exchange = enrich_trade['best_sell_exchange']
-    trade_capital = enrich_trade['trade_capital']
-
-# not sure if they mean the correct thing
-    state.exchange_balances[buy_exchange]['available'] -= trade_capital
-    state.exchange_balances[buy_exchange]['used'] += trade_capital
-
-    # state.exchange_balances[sell_exchange]['available'] -= trade_capital
-    # state.exchange_balances[sell_exchange]['used'] += trade_capital
-
-
-
     enrich_trade['trade_time'] = time.time()
     enrich_trade['action'] = 'open'
     state.trade_history.append(enrich_trade)
     state.active_trades.append(enrich_trade)
     state.opening_positions += 1
-    decision_logger.info(f"决策id: {enrich_trade['decision_id']} 开仓成功, 使用资金: {trade_capital: .2f} USDT")
+    decision_logger.info(f"决策id: {enrich_trade['decision_id']} 开仓成功")
     output_logger.info(f"开仓：决策id: {enrich_trade['decision_id']}, 货币种类：{enrich_trade['symbol']}，购买交易所：{enrich_trade['best_buy_exchange']}，购买价：{enrich_trade['best_buy_price']}，出售交易所：{enrich_trade['best_sell_exchange']}，出售价：{enrich_trade['best_sell_price']}，价差：{enrich_trade['open_spread']}，价差比：{enrich_trade['open_spread_pct']}")
 
 def evaluate_active_position(trade, snapshot, state):
@@ -626,13 +514,10 @@ def evaluate_active_position(trade, snapshot, state):
     )
     position_age = time.time() - trade['trade_time']
     
-    # trade['net_entry'] is something i forget, do not recommend using it
     entry_net = trade['net_entry']
     entry_costs = trade['buy_fee'] + trade['sell_fee'] 
     exit_net = exit_costs['total_cost']
-    spread_diff = trade['best_sell_price'] - trade['best_buy_price'] + current_buy_price - current_sell_price
-    total_fee_cost = entry_costs + exit_net
-    unrealized_pnl = spread_diff * trade['trade_amount'] - total_fee_cost
+    unrealized_pnl = entry_net + exit_net - entry_costs - exit_net
 
     return {
         'current_spread': current_sell_price - current_buy_price,
@@ -644,52 +529,19 @@ def evaluate_active_position(trade, snapshot, state):
         'decision_id': trade['decision_id'],
     }
 
-# def should_close_position(trade, current_status, state):
-#     """判断是否应该平仓"""
-#     unrealized_pnl_pct = current_status['unrealized_pnl']/(trade['best_buy_price'] * trade['trade_amount'])
-    
-#     if unrealized_pnl_pct >= 0.001:
-#         decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止盈")
-#         return True
-
-#     if unrealized_pnl_pct <= Config.STOP_LOSS_PCT:
-#         decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止损")
-#         return True
-
-#     return False
-
 def should_close_position(trade, current_status, state):
-    current_spread_pct =  2 * current_status['current_spread'] / (current_status['current_buy_price'] + current_status['current_sell_price'])
-    current_time = time.time()
-    holding_time = current_time - trade['trade_time']
-    if holding_time > Config.MAX_HOLDING_TIME:
-        
-        return True
-    spread_diff = trade['open_spread_pct']
-    # if (trade['open_spread_pct'] - current_spread_pct) >= Config.PROFIT_THRESHOLD:
-    if current_spread_pct <= trade['open_spread_pct'] * Config.MAGIC_THRESHOLD:
-
-    # if  current_spread_pct <= 0:
-
-        decision_logger.debug(
-            f"🧮 Spread check: open={trade['open_spread_pct']:.6f}, current={current_spread_pct:.6f}, diff={trade['open_spread_pct'] - current_spread_pct:.6f}"
-        )
-
-        decision_logger.info(
-            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：止盈（当前价差率: {current_spread_pct:.6f}）"
-        )
+    """判断是否应该平仓"""
+    unrealized_pnl_pct = current_status['unrealized_pnl']/(trade['best_buy_price'] * trade['trade_amount'])
+    
+    if unrealized_pnl_pct >= 0.001:
+        decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止盈")
         return True
 
-    if current_spread_pct <= Config.STOP_LOSS_THRESHOLD:
-        decision_logger.info(
-            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：止损（当前价差率: {current_spread_pct:.6f}）"
-        )
+    if unrealized_pnl_pct <= Config.STOP_LOSS_PCT:
+        decision_logger.info(f"决策id:{current_status['decision_id']}, 触发平仓条件：止损")
         return True
-    decision_logger.info(
-            f"❌ 决策id:{current_status['decision_id']}，无法触发平仓条件：（当前价差率: {current_spread_pct:.6f}）"
-        )
+
     return False
-
 
 def determine_exit_reason(trade, current_status):
     return "unimplemented"
@@ -697,49 +549,23 @@ def determine_exit_reason(trade, current_status):
 def close_position(trade, current_status, state):
     """平仓"""
     trade = trade.copy()
-
-    buy_exchange = trade['best_buy_exchange']
-    sell_exchange = trade['best_sell_exchange']
-    trade_capital = trade['trade_capital']
-    pnl = current_status['unrealized_pnl']
-
-    state.exchange_balances[buy_exchange]['used'] -= trade_capital
-    # 平分
-    # state.exchange_balances[buy_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[buy_exchange]['available'] += trade_capital + pnl / 2
-
-    # state.exchange_balances[sell_exchange]['used'] -= trade_capital
-    # state.exchange_balances[sell_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[sell_exchange]['available'] += pnl / 2
-
-    state.total_pnl += pnl
-    state.total_balance  = state.initial_capital + state.total_pnl
     trade.update({
         'action': 'close',
         'close_time': time.time(),
         'pnl': current_status['unrealized_pnl'],
         'exit_reason': determine_exit_reason(trade, current_status),
-        'current_buy_price':current_status['current_buy_price'],
-        'current_sell_price':current_status['current_sell_price'],
         'decision_id': current_status['decision_id']
     })
     state.trade_history.append(trade)
     state.active_trades.pop()
     state.opening_positions -= 1
-
-    decision_logger.info(
-        f"✅ 平仓成功｜决策id: {current_status['decision_id']}｜币种: {trade['symbol']}｜"
-        f"开仓: {trade['best_buy_price']}@{trade['best_buy_exchange']} → {trade['best_sell_price']}@{trade['best_sell_exchange']}｜"
-        f"平仓: {current_status['current_buy_price']}@{trade['best_buy_exchange']} → {current_status['current_sell_price']}@{trade['best_sell_exchange']}｜"
-        f"原始价差: {trade['open_spread']:.6f}｜当前价差: {current_status['current_sell_price'] - current_status['current_buy_price']:.6f}｜"
-        f"交易本金: {trade['trade_capital']:.6f}｜净收益: {trade['pnl']:.6f}｜收益率: {(trade['pnl'] / state.initial_capital):.6%}"
-    )
-
+    decision_logger.info(f"决策id: {current_status['decision_id']}, 平仓成功")
+    
     current_spread = current_status['current_sell_price'] - current_status['current_buy_price']
-    current_spread_pct = 2 * current_spread / (current_status['current_sell_price']+current_status['current_buy_price'])
+    current_spread_pct = current_spread / current_status['current_buy_price']
 
     output_logger.info(
-        f"平仓: 决策id: {current_status['decision_id']}, 货币种类: {trade['symbol']}，平仓（卖出）交易所: {trade['best_buy_exchange']}, 平仓（卖出）价: {current_status['current_buy_price']}, 出售交易所：{trade['best_sell_exchange']}，平仓价：{current_status['current_sell_price']}，原始价差：{trade['open_spread']}，原始价差比：{trade['open_spread_pct']}，当前价差：{current_spread:.6f}，当前价差比：{current_spread_pct:.6f}，最终收益：{trade['pnl']:.6f}"
+        f"平仓: 决策id: {current_status['decision_id']}, 货币种类: {trade['symbol']}，平仓（卖出）交易所: {trade['best_buy_exchange']}, 平仓（卖出）价: {current_status['current_buy_price']}, 出售交易所：{trade['best_sell_exchange']}，平仓价：{current_status['current_sell_price']}，原始价差：{trade['open_spread']}，原始价差比：{trade['open_spread_pct']}，当前价差：{current_spread:.2f}，当前价差比：{current_spread_pct:.4f}，最终收益：{trade['pnl']:.2f}"
     )
 
 async def execute_simulation(state):
@@ -748,14 +574,9 @@ async def execute_simulation(state):
     print("[SIMULATION] Simulation starts")
 
     while True:
-        await asyncio.sleep(0.1)
-        async with state.opportunity_lock:
-            opportunity = state.latest_opportunity
-            state.latest_opportunity = None  # 清空，避免重复处理
-
-        if opportunity is None:
-            continue
+        opportunity = await state.strategy_results_queue.get()
         enrich_trade = enrich_with_costs_and_profits(opportunity)
+
         async with state.lock:
             if state.opening_positions < Config.MAX_POSITION_SIZE and should_open_position(enrich_trade, state):
                 open_position(enrich_trade, state)
@@ -778,7 +599,6 @@ async def main():
     """主程序入口"""
     # 初始化
     state.init_symbols()
-    state.init_exchange_balances()
     print(f"Monitoring {len(state.symbols)} currencies")
     
     # 启动所有任务

@@ -257,9 +257,9 @@ def display_balance_info(state):
 
 async def display_terminal(state):
     while True:
-        display_exchange_data(state)
-        display_trade_history(state)
-        display_balance_info(state)
+        # display_exchange_data(state)
+        # display_trade_history(state)
+        # display_balance_info(state)
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         await asyncio.sleep(1)
 
@@ -698,7 +698,7 @@ def should_close_position(trade, current_status, state):
         decision_logger.info(
             f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：满足利润率阈值: {Config.MINIMUM_PROFIT_PCT}, 当前利润率: {(current_status['unrealized_pnl'] / Config.INITIAL_CAPITAL)}，当前价差率: {current_spread_pct:.6f}）"
         )
-        return True
+        return True   
 
     # 未验证的逻辑
     if current_spread_pct <= Config.STOP_LOSS_THRESHOLD:
