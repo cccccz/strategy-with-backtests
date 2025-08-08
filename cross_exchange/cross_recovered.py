@@ -574,7 +574,7 @@ def should_open_position(enrich_trade, state):
         return False
     spread_pct = enrich_trade['open_spread_pct']
     
-    # if spread_pct >= Config.MIN_SPREAD_PCT_THRESHOLD:
+    # if spread_pct >= Config.MAGIC_THRESHOLD:
     if enrich_trade['estimated_net_profit'] > 0:
         decision_logger.info(f"✅ 决策 id: {enrich_trade['decision_id']} 满足开仓条件: 'estimated_net_profit': {enrich_trade['estimated_net_profit']}, spread_pct={spread_pct:.6f}")
         return True
@@ -584,13 +584,10 @@ def should_open_position(enrich_trade, state):
 
 def open_position(enrich_trade, state):
     """开仓"""
-
-    #TODO
     buy_exchange = enrich_trade['best_buy_exchange']
     sell_exchange = enrich_trade['best_sell_exchange']
     trade_capital = enrich_trade['trade_capital']
 
-    # 买入的占用资金
     state.exchange_balances[buy_exchange]['available'] -= trade_capital
     state.exchange_balances[buy_exchange]['used'] += trade_capital
 
@@ -661,17 +658,6 @@ def evaluate_active_position(trade, snapshot, state):
 #     return False
 
 def should_close_position(trade, current_status, state):
-    current_time = time.time()
-    position_time = -trade['trade_time'] + current_time
-    if position_time > Config.MAX_POSITION_TIME:
-#         decision_logger.debug(
-#     f"🧮 Spread check: open={trade['open_spread_pct']:.6f}, current={current_spread_pct:.6f}, diff={trade['open_spread_pct'] - current_spread_pct:.6f}"
-# )
-
-        decision_logger.info(
-            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：超时（> {Config.MAX_POSITION_TIME}）（当前持仓时间：{position_time} 当前价差率: {current_spread_pct:.6f}）"
-        )
-        return True
     current_spread_pct =  2 * current_status['current_spread'] / (current_status['current_buy_price'] + current_status['current_sell_price'])
 
     spread_diff = trade['open_spread_pct']
@@ -679,35 +665,23 @@ def should_close_position(trade, current_status, state):
     if current_spread_pct <= trade['open_spread_pct'] * Config.MAGIC_THRESHOLD:
 
     # if  current_spread_pct <= 0:
-    
 
         decision_logger.debug(
             f"🧮 Spread check: open={trade['open_spread_pct']:.6f}, current={current_spread_pct:.6f}, diff={trade['open_spread_pct'] - current_spread_pct:.6f}"
         )
 
         decision_logger.info(
-            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：满足价差阈值（当前价差率: {current_spread_pct:.6f}, 需要: {trade['open_spread_pct'] * Config.PROFIT_THRESHOLD}）"
-        )
-        return True
-    # 止盈
-    if (current_status['unrealized_pnl'] / Config.INITIAL_CAPITAL) > Config.MINIMUM_PROFIT_PCT:
-        decision_logger.debug(
-            f"🧮 Spread check: open={trade['open_spread_pct']:.6f}, current={current_spread_pct:.6f}, diff={trade['open_spread_pct'] - current_spread_pct:.6f}"
-        )
-
-        decision_logger.info(
-            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：满足利润率阈值: {Config.MINIMUM_PROFIT_PCT}, 当前利润率: {(current_status['unrealized_pnl'] / Config.INITIAL_CAPITAL)}，当前价差率: {current_spread_pct:.6f}）"
+            f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：止盈（当前价差率: {current_spread_pct:.6f}）"
         )
         return True
 
-    # 未验证的逻辑
     if current_spread_pct <= Config.STOP_LOSS_THRESHOLD:
         decision_logger.info(
             f"✅ 决策id:{current_status['decision_id']}，触发平仓条件：止损（当前价差率: {current_spread_pct:.6f}）"
         )
         return True
     decision_logger.info(
-            f"❌ 决策id:{current_status['decision_id']}，无法触发平仓条件：当前价差率: {current_spread_pct:.6f}, 需要: {trade['open_spread_pct'] * Config.PROFIT_THRESHOLD}"
+            f"❌ 决策id:{current_status['decision_id']}，无法触发平仓条件：（当前价差率: {current_spread_pct:.6f}）"
         )
     return False
 
@@ -726,14 +700,11 @@ def close_position(trade, current_status, state):
 
     state.exchange_balances[buy_exchange]['used'] -= trade_capital
     # 平分
-    #TODO
     # state.exchange_balances[buy_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[buy_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[buy_exchange]['total'] = state.exchange_balances[buy_exchange]['available'] + state.exchange_balances[buy_exchange]['used']
-    
+    state.exchange_balances[buy_exchange]['available'] += trade_capital + pnl
+
     # state.exchange_balances[sell_exchange]['used'] -= trade_capital
-    state.exchange_balances[sell_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[sell_exchange]['total'] = state.exchange_balances[sell_exchange]['available'] + state.exchange_balances[sell_exchange]['used']
+    # state.exchange_balances[sell_exchange]['available'] += trade_capital + pnl / 2
 
     state.total_pnl += pnl
     state.total_balance  = state.initial_capital + state.total_pnl
