@@ -10,7 +10,6 @@ import TradeHistoryTable from './components/TradeHistoryTable';
 
 const App = () => {
   // --- STATE MANAGEMENT ---
-  // All state is managed in the parent App component.
   const [data, setData] = useState({
     balance: null,
     currentPosition: null,
@@ -23,19 +22,25 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  // Trade history refresh state
+  const [isRefreshingHistory, setIsRefreshingHistory] = useState(false);
+
+  // Pagination state for trade history
+  const [tradeHistoryPage, setTradeHistoryPage] = useState(1);
+  const tradeHistoryPerPage = 10;  // You can adjust this or make configurable
+
   // --- API & DATA FETCHING ---
   const API_BASE = 'http://localhost:5036/api';
 
+  // Fetch other dashboard data (no trade history)
   const fetchData = async () => {
     try {
       const endpoints = [
         'balance',
         'current-position',
-        'trade-history',
         'latest-opportunity'
       ];
 
-      // Fetch all data points concurrently
       const responses = await Promise.allSettled(
         endpoints.map(endpoint => 
           fetch(`${API_BASE}/${endpoint}`)
@@ -43,39 +48,56 @@ const App = () => {
         )
       );
 
-      const [balance, currentPosition, tradeHistory, latestOpportunity] = responses.map(
+      const [balance, currentPosition, latestOpportunity] = responses.map(
         (result) => result.status === 'fulfilled' ? result.value : null
       );
 
-      setData({
+      setData(prev => ({
+        ...prev,
         balance,
         currentPosition,
-        tradeHistory,
         latestOpportunity,
         lastUpdated: new Date().toISOString(),
         connected: true
-      });
+      }));
       
     } catch (error) {
       console.error('Failed to fetch data:', error);
       setData(prev => ({ ...prev, connected: false }));
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
   };
 
-  // Effect for initial data load and auto-refreshing
+  // Fetch trade history separately, with pagination support
+  const fetchTradeHistory = async (page = 1) => {
+    try {
+      setIsRefreshingHistory(true);
+      const res = await fetch(`${API_BASE}/trade-history?page=${page}&per_page=${tradeHistoryPerPage}`);
+      const history = res.ok ? await res.json() : null;
+      if (history) {
+        setData(prev => ({ ...prev, tradeHistory: history }));
+        setTradeHistoryPage(page);
+      }
+    } catch (err) {
+      console.error('Failed to fetch trade history:', err);
+    } finally {
+      setIsRefreshingHistory(false);
+    }
+  };
+
+  // Effect for initial load and auto-refresh (no trade history)
   useEffect(() => {
     fetchData();
-    
+    fetchTradeHistory(tradeHistoryPage);
+
     if (autoRefresh) {
-      const interval = setInterval(fetchData, 2000); // Update every 2 seconds
+      const interval = setInterval(fetchData, 2000);
       return () => clearInterval(interval);
     }
   }, [autoRefresh]);
 
   // --- HELPER FUNCTIONS ---
-  // These are kept in the parent to be passed down as props where needed.
   const formatPrice = (price) => {
     if (typeof price !== 'number') return 'N/A';
     return price.toFixed(6);
@@ -83,7 +105,7 @@ const App = () => {
 
   const formatTime = (timestamp) => {
     if (!timestamp) return 'N/A';
-    const date = new Date(timestamp * 1000); // Assuming Unix timestamp
+    const date = new Date(timestamp * 1000);
     return date.toLocaleString('en-US', {
       month: '2-digit',
       day: '2-digit',
@@ -100,7 +122,6 @@ const App = () => {
   };
 
   // --- RENDER LOGIC ---
-  // Display a loading indicator while fetching initial data.
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -112,7 +133,6 @@ const App = () => {
     );
   }
   
-  // Render the main dashboard layout with child components
   return (
     <div className="min-h-screen bg-gray-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -121,7 +141,6 @@ const App = () => {
           <p className="text-gray-600 mt-2">实时监控跨交易所交易机会</p>
         </div>
   
-        {/* Render child components and pass necessary data and functions as props */}
         <StatusHeader 
           connected={data.connected}
           lastUpdated={data.lastUpdated}
@@ -130,7 +149,7 @@ const App = () => {
           fetchData={fetchData}
         />
   
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-2 gap-6">
           <LatestOpportunityPanel 
             opportunity={data.latestOpportunity}
             formatPrice={formatPrice}
@@ -153,6 +172,10 @@ const App = () => {
           formatPrice={formatPrice}
           formatTime={formatTime}
           formatPnL={formatPnL}
+          fetchTradeHistory={fetchTradeHistory}
+          isRefreshing={isRefreshingHistory}
+          currentPage={tradeHistoryPage}
+          totalPages={data.tradeHistory?.total_pages || 1}
         />
       </div>
     </div>

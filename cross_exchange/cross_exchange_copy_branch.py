@@ -1,6 +1,6 @@
 from shared_imports import redis,logging,time,os,Config,asyncio,json,websockets,ConnectionClosedError,ConnectionClosedOK,copy
 from trading_state import TradingState
-from websocket_data_fetch import binance_ws,okx_ws,bybit_ws,bitget_ws
+from websocket_data_fetch import binance_ws,okx_ws,bybit_ws,bitget_ws,bybit_orderbook_ws,bitget_orderbook_ws,okx_orderbook_ws,binance_orderbook_ws
 from display import display_terminal
 from logging_setup import setup_loggers
 from strategy_engine import compute_strategy
@@ -29,6 +29,10 @@ async def main():
         bitget_ws(state),
         okx_ws(state),
         bybit_ws(state),
+        # binance_orderbook_ws(state),
+        # bitget_orderbook_ws(state),
+        # okx_orderbook_ws(state),
+        # bybit_orderbook_ws(state),
         compute_strategy(state),
         execute_simulation(state),
         display_terminal(state),

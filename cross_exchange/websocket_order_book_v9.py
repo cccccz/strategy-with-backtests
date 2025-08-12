@@ -44,8 +44,8 @@ def parse_binance_orderbook(data):
             if raw_bids and raw_asks:
                 bids = [(float(price), float(qty)) for price, qty in raw_bids]
                 asks = [(float(price), float(qty)) for price, qty in raw_asks]
-                bids.sort(key=lambda x: x[0], reverse=True)
-                asks.sort(key=lambda x: x[0])
+                # bids.sort(key=lambda x: x[0], reverse=True)
+                # asks.sort(key=lambda x: x[0])
                 return symbol, bids, asks
     return None
 
@@ -61,8 +61,8 @@ def parse_bybit_orderbook(data):
         if raw_bids and raw_asks:
             bids = [(float(price), float(qty)) for price, qty in raw_bids]
             asks = [(float(price), float(qty)) for price, qty in raw_asks]
-            bids.sort(key=lambda x: x[0], reverse=True)
-            asks.sort(key=lambda x: x[0])
+            # bids.sort(key=lambda x: x[0], reverse=True)
+            # asks.sort(key=lambda x: x[0])
             return symbol, bids, asks
     return None
 
@@ -78,8 +78,8 @@ def parse_bitget_orderbook(data):
         if raw_bids and raw_asks:
             bids = [(float(price), float(qty)) for price, qty in raw_bids]
             asks = [(float(price), float(qty)) for price, qty in raw_asks]
-            bids.sort(key=lambda x: x[0], reverse=True)
-            asks.sort(key=lambda x: x[0])
+            # bids.sort(key=lambda x: x[0], reverse=True)
+            # asks.sort(key=lambda x: x[0])
             return symbol, bids, asks
     return None
 
@@ -96,8 +96,8 @@ def parse_okx_orderbook(data):
         if raw_bids and raw_asks:
             bids = [(float(item[0]), float(item[1])) for item in raw_bids if len(item) >= 2]
             asks = [(float(item[0]), float(item[1])) for item in raw_asks if len(item) >= 2]
-            bids.sort(key=lambda x: x[0], reverse=True)
-            asks.sort(key=lambda x: x[0])
+            # bids.sort(key=lambda x: x[0], reverse=True)
+            # asks.sort(key=lambda x: x[0])
             return symbol, bids, asks
     return None
 

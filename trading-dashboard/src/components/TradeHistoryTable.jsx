@@ -1,6 +1,16 @@
 import React from 'react';
+import { RefreshCw } from 'lucide-react';
 
-const TradeHistoryTable = ({ tradeHistory, formatPrice, formatTime, formatPnL }) => {
+const TradeHistoryTable = ({
+  tradeHistory,
+  formatPrice,
+  formatTime,
+  formatPnL,
+  fetchTradeHistory,
+  isRefreshing,
+  currentPage,
+  totalPages
+}) => {
   // Display a placeholder if there is no trade history.
   if (!tradeHistory || !tradeHistory.trade_pairs) {
     return (
@@ -15,10 +25,19 @@ const TradeHistoryTable = ({ tradeHistory, formatPrice, formatTime, formatPnL })
 
   return (
     <div className="bg-white rounded-lg shadow-sm border p-6">
-      <h3 className="text-lg font-semibold text-gray-800 mb-4">交易历史</h3>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold text-gray-800">交易历史</h3>
+        <button 
+          onClick={() => fetchTradeHistory(currentPage)} 
+          disabled={isRefreshing}
+          className="p-2 rounded-md bg-white text-gray-500 border border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
       
       {/* Trade History Table */}
-      <div className="overflow-x-auto mb-6">
+      <div className="overflow-x-auto mb-6 max-h-[400px] overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr className="border-b">
@@ -33,7 +52,7 @@ const TradeHistoryTable = ({ tradeHistory, formatPrice, formatTime, formatPnL })
             </tr>
           </thead>
           <tbody>
-            {trade_pairs.slice().reverse().map((trade, index) => {
+            {trade_pairs.slice().map((trade, index) => {
               const buyInfo = `${trade.buy_exchange?.slice(0, 3).toUpperCase()}@${formatPrice(trade.open_buy_price)} / ${trade.close_buy_price ? formatPrice(trade.close_buy_price) : formatPrice(trade.current_buy_price) || 'N/A'}`;
               const sellInfo = `${trade.sell_exchange?.slice(0, 3).toUpperCase()}@${formatPrice(trade.open_sell_price)} / ${trade.close_sell_price ? formatPrice(trade.close_sell_price) : formatPrice(trade.current_sell_price) || 'N/A'}`;
               const pnlColor = trade.pnl >= 0 ? 'text-green-600' : 'text-red-600';
@@ -59,6 +78,27 @@ const TradeHistoryTable = ({ tradeHistory, formatPrice, formatTime, formatPnL })
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Pagination controls */}
+      <div className="flex justify-between items-center mt-4">
+        <button
+          disabled={currentPage <= 1}
+          onClick={() => fetchTradeHistory(currentPage - 1)}
+          className="px-3 py-1 bg-gray-200 rounded disabled:opacity-50"
+        >
+          上一页
+        </button>
+
+        <span>第 {currentPage} 页，共 {totalPages} 页</span>
+
+        <button
+          disabled={currentPage >= totalPages}
+          onClick={() => fetchTradeHistory(currentPage + 1)}
+          className="px-3 py-1 bg-gray-200 rounded disabled:opacity-50"
+        >
+          下一页
+        </button>
       </div>
 
       {/* Summary Section */}
