@@ -8,9 +8,13 @@ def extract_valid_quotes(exchange_data):
     """提取有效报价"""
     quotes = []
     for exchange, data in exchange_data.items():
-        bid, ask = data['bid'], data['ask']
-        if bid and ask:
-            quotes.append((exchange, float(bid), float(ask)))
+        bids = data.get('bids')
+        asks = data.get('asks')
+        if bids and asks:
+            best_bid_price = float(bids[0][0])
+            best_ask_price = float(asks[0][0])
+
+            quotes.append((exchange, best_bid_price, best_ask_price))
     return quotes
 
 def create_opportunity_dict(symbol, best_buy, best_sell, quotes):
@@ -154,7 +158,7 @@ def enrich_with_costs_and_profits(opportunity,state:TradingState):
     }
     return enriched
 
-def should_open_position(enrich_trade, statestate:TradingState):
+def should_open_position(enrich_trade, state:TradingState):
     if enrich_trade['trade_amount'] <= 0:
         return False
     spread_pct = enrich_trade['open_spread_pct']
