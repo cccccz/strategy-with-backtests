@@ -1,6 +1,7 @@
 from shared_imports import websockets,asyncio, json,ConnectionClosedError,ConnectionClosedOK,Config
+from trading_state import TradingState
 # 通用WebSocket连接器
-async def generic_ws_connector(exchange_name, ws_config, state):
+async def generic_ws_connector(exchange_name, ws_config, state:TradingState):
     """通用WebSocket连接器，减少重复代码"""
     reconnect_count = 0
     
@@ -98,7 +99,7 @@ def parse_okx(data):
     return None
 
 # 各交易所连接函数
-async def binance_ws(state):
+async def binance_ws(state:TradingState):
     params = [f"{s.lower()}@bookTicker" for s in state.symbols]
     uri = f"wss://fstream.binance.com/stream?streams=" + "/".join(params)
     config = {
@@ -107,7 +108,7 @@ async def binance_ws(state):
     }
     await generic_ws_connector('Binance', config, state)
 
-async def bybit_ws(state):
+async def bybit_ws(state:TradingState):
     config = {
         'uri': "wss://stream.bybit.com/v5/public/linear",
         'subscribe_msg': {
@@ -118,7 +119,7 @@ async def bybit_ws(state):
     }
     await generic_ws_connector('Bybit', config, state)
 
-async def bitget_ws(state):
+async def bitget_ws(state:TradingState):
     config = {
         'uri': "wss://ws.bitget.com/v2/ws/public",
         'subscribe_msg': {
@@ -133,7 +134,7 @@ async def bitget_ws(state):
     }
     await generic_ws_connector('Bitget', config, state)
 
-async def okx_ws(state):
+async def okx_ws(state:TradingState):
     config = {
         'uri': "wss://ws.okx.com:8443/ws/v5/public",
         'subscribe_msg': {
@@ -146,3 +147,4 @@ async def okx_ws(state):
         'parser': parse_okx
     }
     await generic_ws_connector('OKX', config, state)
+
