@@ -226,7 +226,7 @@ class TradingState:
                 'current_sell_price': current_sell_price,
                 'open_time': open_trade['trade_time'],
                 'close_time': None,
-                'pnl': open_trade.get('estimated_net_profit', 0),
+                'pnl': str(open_trade.get('estimated_net_profit', 0)) + " (estimated)",
                 'status': 'OPEN',
                 'estimated_profit': open_trade.get('estimated_net_profit', 0)
             }
