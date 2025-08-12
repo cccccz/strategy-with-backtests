@@ -797,8 +797,8 @@ def evaluate_active_position(trade, snapshot, state):
     buy_exchange = trade['best_buy_exchange']
     sell_exchange = trade['best_sell_exchange']
 
-    current_buy_price = snapshot[symbol][buy_exchange]['ask']
-    current_sell_price = snapshot[symbol][sell_exchange]['bid']
+    current_buy_price = snapshot[symbol][buy_exchange]['bid']
+    current_sell_price = snapshot[symbol][sell_exchange]['ask']
     
     if not (current_buy_price and current_sell_price):
         return None
