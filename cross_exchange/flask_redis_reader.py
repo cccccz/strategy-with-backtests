@@ -1,7 +1,8 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import redis
 import json
 from flask_cors import CORS
+import math
 
 app = Flask(__name__)
 # fix for status: CORS(Cross-Origin Resource Sharing) Error
@@ -74,12 +75,44 @@ def get_current_position():
 
 @app.route('/api/trade-history')
 def get_trade_history():
-    """Get formatted trade history - matches display_trade_history structure"""
+    """Get paginated trade history sorted by latest trade"""
     try:
+        # Pagination parameters
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+
         history_data = redis_client.get("trading:formatted_history")
-        if history_data:
-            return jsonify(json.loads(history_data))
-        return {"error": "No trade history available"}, 404
+        if not history_data:
+            return {"error": "No trade history available"}, 404
+
+        history = json.loads(history_data)
+
+        trade_pairs = history.get("trade_pairs", [])
+
+        # Sort trades by close_time (fall back to open_time if missing)
+        trade_pairs_sorted = sorted(
+            trade_pairs,
+            key=lambda t: t.get("close_time") or t.get("open_time", 0),
+            reverse=True
+        )
+
+        total_items = len(trade_pairs_sorted)
+        total_pages = math.ceil(total_items / per_page)
+
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated_trades = trade_pairs_sorted[start:end]
+
+        return jsonify({
+            "last_updated": history.get("last_updated"),
+            "summary": history.get("summary"),
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+            "total_items": total_items,
+            "trade_pairs": paginated_trades
+        })
+
     except Exception as e:
         return {"error": str(e)}, 500
 
