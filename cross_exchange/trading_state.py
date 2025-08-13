@@ -10,8 +10,16 @@ class TradingState:
     integration for data persistence and monitoring.
     
     Attributes:
-        shared_data (Dict[str, Dict[str, Dict[str, Optional[float]]]]): Market data structure
-            {symbol: {exchange: {"bid": price, "ask": price}}}
+        # shared_data (Dict[str, Dict[str, Dict[str, Optional[float]]]]): Market data structure
+            {symbol: {exchange: {
+                                    "bid": price,     # 保持兼容
+                                    "ask": price,     # 保持兼容  
+                                    "orderbook": {    # 新增深度数据
+                                        "bids": [(price, quantity), ...],  # 按价格降序
+                                        "asks": [(price, quantity), ...],  # 按价格升序
+                                        "timestamp": timestamp
+                                    }
+                                }}  
         active_trades (List[Dict[str, Any]]): Currently open trading positions
         trade_history (List[Dict[str, Any]]): Complete history of all trades
         opening_positions (int): Count of currently opening positions
@@ -20,7 +28,7 @@ class TradingState:
         decision_id_lock (asyncio.Lock): Lock for decision ID generation
         symbols (List[str]): List of trading symbol pairs (e.g., ["BTCUSDT", "ETHUSDT"])
         okx_symbols (List[str]): OKX-formatted symbol pairs for API compatibility
-        latest_opportunity (Optional[Dict[str, Any]]): Most recent arbitrage opportunity
+        # latest_opportunity (Optional[Dict[str, Any]]): Most recent arbitrage opportunity
         opportunity_lock (asyncio.Lock): Lock for opportunity updates
         redis_client (redis.Redis): Redis client for data persistence
         initial_capital (float): Starting capital amount
@@ -143,8 +151,8 @@ class TradingState:
         
         exchanges = ['Binance', 'OKX', 'Bitget', 'Bybit']
         self.shared_data = {
-            symbol: {exchange: {"bid": None, "ask": None} for exchange in exchanges}
-            for symbol in self.symbols
+            symbol: {exchange: {"bid": None, "ask": None, "orderbook":{"bids":None,"asks":None,"timestamp":None}                
+            } for exchange in exchanges}for symbol in self.symbols
         }
 
     async def update_redis_data(self):

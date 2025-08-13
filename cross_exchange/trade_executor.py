@@ -182,7 +182,7 @@ async def execute_simulation(state: TradingState):
             continue
         enrich_trade = enrich_with_costs_and_profits(opportunity,state)
         async with state.lock:
-            if state.opening_positions < Config.MAX_POSITION_SIZE and should_open_position(enrich_trade, state):
+            if  should_open_position(enrich_trade, state):
                 open_position(enrich_trade, state)
 
         async with state.lock:

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 from shared_imports import time, setup_loggers,Config,copy
 from trading_state import TradingState,asyncio
+from liquidity_tools import calculate_available_liquidity,calculate_effective_price,estimate_slippage_cost
 
 decision_logger, output_logger = setup_loggers()
 
@@ -13,7 +14,7 @@ def extract_valid_quotes(exchange_data: Dict[str, Dict[str, Optional[float]]]) -
     
     Args:
         exchange_data: Dictionary mapping exchange names to price data
-            {exchange: {"bid": price, "ask": price}}
+        {exchange: {"bid": price, "ask": price, 'orderbook':{"bids":[(bp1,bs1),...],"asks":[(ap1,aq1),...]}}}
             
     Returns:
         List of tuples: [(exchange_name, best_bid_price, best_ask_price), ...]
@@ -52,6 +53,7 @@ def create_opportunity_dict(symbol: str, best_buy: Tuple[str, float, float],
         - open_spread (float): Price difference (sell_price - buy_price)
         - open_spread_pct (float): Percentage spread (2 * spread / (buy + sell))
         - quotes (List[Tuple]): All valid exchange quotes
+        - # orderbook : All valid orderbooks, added in the father function
         - time_stamp_opportunity (float): Unix timestamp of opportunity detection
     """
     open_spread = best_sell[1] - best_buy[2]
@@ -79,7 +81,7 @@ def calculate_opportunity(symbol: str, exchange_data: Dict[str, Dict[str, Option
     Args:
         symbol: Trading symbol to analyze
         exchange_data: Price data from all exchanges
-            {exchange: {"bid": price, "ask": price}}
+            {exchange: {"bid": price, "ask": price, 'orderbook':{"bids":[(bp1,bs1),...],"asks":[(ap1,aq1),...]}}}
             
     Returns:
         Opportunity dictionary (see create_opportunity_dict) or None if
@@ -92,7 +94,17 @@ def calculate_opportunity(symbol: str, exchange_data: Dict[str, Dict[str, Option
     best_buy = min(quotes, key=lambda x: x[2])  # ask
     best_sell = max(quotes, key=lambda x: x[1])  # bid
 
-    return create_opportunity_dict(symbol, best_buy, best_sell, quotes)
+    opp_dict =  create_opportunity_dict(symbol, best_buy, best_sell, quotes)
+    #hotfix
+    best_buy_exchange = opp_dict['best_buy_exchange']
+    best_sell_exchange = opp_dict['best_sell_exchange']
+    best_buy_orderbook = exchange_data[best_buy_exchange]['orderbook']
+    best_sell_orderbook = exchange_data[best_sell_exchange]['orderbook']
+    opp_dict['best_buy_orderbook'] = best_buy_orderbook
+    opp_dict['best_sell_orderbook'] = best_sell_orderbook
+
+    return opp_dict
+
 
 async def compute_strategy(state: TradingState):
     """
@@ -217,6 +229,7 @@ def calculate_required_margin(trade_amount: float) -> float:
     """
     return 0
 
+
 def enrich_with_costs_and_profits(opportunity: Dict[str, Any], 
                                  state: TradingState) -> Optional[Dict[str, Any]]:
     """
@@ -244,7 +257,37 @@ def enrich_with_costs_and_profits(opportunity: Dict[str, Any],
         - close_spread_pct (float): Estimated closing spread percentage
         - stop_loss (float): Stop loss threshold
         - decision_id (int): Unique decision identifier
+        # 新增流动性相关字段
+        'liquidity_check': {
+            'buy_liquidity': Dict[str, Any],      # calculate_available_liquidity 返回值
+            'sell_liquidity': Dict[str, Any],     # calculate_available_liquidity 返回值
+            'sufficient_liquidity': bool,         # 综合流动性判断
+            'liquidity_score': float              # 流动性评分 0-1
+        },
         
+        # 新增滑点相关字段
+        'slippage_costs': {
+            'buy_slippage': Dict[str, float],     # estimate_slippage_cost 返回值
+            'sell_slippage': Dict[str, float],    # estimate_slippage_cost 返回值
+            'total_slippage_cost': float,         # 总滑点成本 USDT
+            'slippage_impact_pct': float          # 滑点对盈利影响百分比
+        },
+        
+        # 新增市场冲击字段
+        'market_impact': {
+            'buy_impact_ratio': float,            # 买单市场冲击比例
+            'sell_impact_ratio': float,           # 卖单市场冲击比例
+            'combined_impact': float,             # 综合市场冲击
+            'risk_level': str                     # 'LOW'/'MEDIUM'/'HIGH'
+        },
+        
+        # 调整后的盈利数据
+        'adjusted_profit': {
+            'net_profit_after_slippage': float,  # 考虑滑点后净利润
+            'adjusted_profit_pct': float,        # 调整后利润率
+            'profit_confidence': float           # 盈利置信度 0-1
+        }
+    }        
         Returns None if trade_amount <= 0
     """
     quotes = opportunity['quotes']
@@ -252,10 +295,33 @@ def enrich_with_costs_and_profits(opportunity: Dict[str, Any],
     best_buy = min(quotes, key=lambda x: x[2])
     best_sell = max(quotes, key=lambda x: x[1])
 
+    buy_orderbook = opportunity['best_buy_orderbook']
+    # print(orderbook)
+    sell_orderbook = opportunity['best_sell_orderbook']
+
     trade_amount = state.calculate_trade_amount(best_buy[0],best_buy[2],best_sell[0],best_sell[1])
     # moved this logic to should_open.... if performance issue then bring it back..
     # if trade_amount <= 0:
     #     return None
+
+    buy_liquidity_result = calculate_available_liquidity(buy_orderbook,trade_amount,'buy')
+    sell_liquidity_result = calculate_available_liquidity(sell_orderbook,trade_amount,'sell')
+
+    buy_slippage_cost_result = estimate_slippage_cost(buy_orderbook,trade_amount,'buy')
+    sell_slippage_cost_result = estimate_slippage_cost(sell_orderbook,trade_amount,'sell')
+
+    # get the trade_amount_v2 from the min of available_quantity from buy and sell
+    trade_amount_slp = min(buy_liquidity_result['available_quantity'],sell_liquidity_result['available_quantity'])
+    real_buy_slippage_cost_result =estimate_slippage_cost(buy_orderbook,trade_amount_slp,'buy')
+    real_buy_slippage_cost = real_buy_slippage_cost_result['absolute_slippage']
+    real_sell_slippage_cost_result = estimate_slippage_cost(sell_orderbook,trade_amount_slp,'sell')
+    real_sell_slippage_cost = real_sell_slippage_cost_result['absolute_slippage']
+    total_slippage_cost = real_buy_slippage_cost + real_sell_slippage_cost
+    effective_buy_price = real_buy_slippage_cost_result['effective_price']
+    effective_sell_price =real_sell_slippage_cost_result['effective_price']
+    # print(f'before: {trade_amount}, after: {trade_amount_slp}')
+
+    # without slippage
     trade_capital = trade_amount * best_buy[2]
     costs = calculate_open_costs(best_buy[0], best_sell[0], best_buy[2], best_sell[1], trade_amount)
     estimated_close_costs = calculate_exit_costs(best_buy[0], best_sell[0], best_sell[1], best_buy[2], trade_amount)
@@ -266,9 +332,30 @@ def enrich_with_costs_and_profits(opportunity: Dict[str, Any],
     close_spread_pct = 2 * (best_sell[2] - best_buy[1]) / (best_buy[1] + best_sell[2])
 
     estimated_net_profit = open_spread * trade_amount - total_cost
+    # i think this should be estimated_net_profit / trade_capital
     estimated_net_profit_pct = estimated_net_profit / best_buy[2]
+
     margin_required = calculate_required_margin(trade_amount)
-    
+
+    # with slippage
+    buy_exchange = best_buy[0]
+    sell_exchange = best_sell[0]
+    trade_capital_slp = trade_amount_slp * effective_buy_price
+    buy_costs_slp = trade_amount_slp  * effective_buy_price * Config.FUTURES_TRADING_FEES[buy_exchange]['taker']
+    sell_costs_slp = trade_amount_slp  * effective_sell_price * Config.FUTURES_TRADING_FEES[sell_exchange]['taker']
+
+    open_cost_slp= buy_costs_slp + sell_costs_slp
+    # 有点累了所以使用open_cost_slp 作为估算，如果效果不好再修改
+    estimated_close_cost_slp = open_cost_slp
+    total_cost_slp = open_cost_slp + estimated_close_cost_slp
+    # 使用加权均价作为比较值
+    open_spread_slp = effective_sell_price - effective_buy_price
+    open_spread_pct_slp = 2 * open_spread_slp / (effective_sell_price + effective_buy_price)
+    # close spread pct or slp pct is just meaningless
+    estimated_pnl_slp = open_spread_slp * trade_amount_slp - total_cost_slp
+    estimated_pnl_pct_slp = estimated_pnl_slp / trade_capital_slp
+    # margin_required 
+
     enriched = {
         'symbol': symbol,
         'best_buy_exchange': best_buy[0],
@@ -292,7 +379,22 @@ def enrich_with_costs_and_profits(opportunity: Dict[str, Any],
         'estimated_net_profit_pct': estimated_net_profit_pct,
         'time_stamp_opportunity': opportunity['time_stamp_opportunity'],
         'stop_loss': -abs(estimated_net_profit * Config.STOP_LOSS_PCT),
-        'decision_id': opportunity['decision_id']
+        'decision_id': opportunity['decision_id'],
+
+        'buy_liquidity': buy_liquidity_result,      # calculate_available_liquidity 返回值
+        'sell_liquidity': sell_liquidity_result,     # calculate_available_liquidity 返回值
+
+        'buy_slippage': buy_slippage_cost_result,     # estimate_slippage_cost 返回值
+        'sell_slippage': sell_slippage_cost_result,    # estimate_slippage_cost 返回值
+        'trade_capital_slp':trade_capital_slp,
+        'trade_amount_slp':trade_amount_slp,
+        'buy_costs_slp':buy_costs_slp,
+        'close_costs_slp':estimated_close_cost_slp,
+        'total_cost_slp':total_cost_slp,
+        'open_spread_slp':open_spread_slp,
+        'open_spread_pct_slp':open_spread_pct_slp,
+        'estimated_pnl_slp':estimated_pnl_slp,
+        'estimated_pnl_pct_slp':estimated_pnl_pct_slp
     }
     return enriched
 
@@ -314,8 +416,14 @@ def should_open_position(enrich_trade: Dict[str, Any], state: TradingState) -> b
         - trade_amount > 0
         - open_spread_pct >= Config.MIN_SPREAD_PCT_THRESHOLD
     """
-    if enrich_trade['trade_amount'] <= 0:
+    if state.opening_positions >= Config.MAX_POSITION_SIZE:
         return False
+    
+    # if enrich_trade['trade_amount'] <= 0:
+    #     return False
+    
+    if enrich_trade['trade_amount_slp'] <= 0:
+        return False 
     spread_pct = enrich_trade['open_spread_pct']
     
     if spread_pct >= Config.MIN_SPREAD_PCT_THRESHOLD:
@@ -445,3 +553,4 @@ def determine_exit_reason(trade: Dict[str, Any], current_status: Dict[str, Any])
         Exit reason string (currently returns "unimplemented")
     """
     return "unimplemented"
+

@@ -254,7 +254,7 @@ def parse_okx_orderbook(data):
 
 # 通用WebSocket连接器 - 专门用于orderbook
 async def generic_orderbook_connector(exchange_name, ws_config, state:TradingState):
-    """通用orderbook WebSocket连接器"""
+    """通用orderbook WebSocket连接器, 并且为旧版代码做了兼容性改动"""
     try:
         print(f"[{exchange_name}] Orderbook Connecting...")
         # print(f"[{exchange_name}] Symbols: {', '.join(state.symbols)}")
@@ -281,8 +281,10 @@ async def generic_orderbook_connector(exchange_name, ws_config, state:TradingSta
                     if parsed:
                         symbol, bids, asks = parsed
                         # print_orderbook(symbol, bids, asks)
-                        state.shared_data[symbol][exchange_name]["bids"]= bids
-                        state.shared_data[symbol][exchange_name]["asks"] = asks
+                        state.shared_data[symbol][exchange_name]["bid"]= bids[0][0]
+                        state.shared_data[symbol][exchange_name]["ask"] = asks[0][0]
+                        state.shared_data[symbol][exchange_name]["orderbook"]["bids"]= bids
+                        state.shared_data[symbol][exchange_name]["orderbook"]["asks"] = asks
                         
                 except asyncio.TimeoutError:
                     print(f"[{exchange_name}] Orderbook: No data for 30s, checking connection...")
