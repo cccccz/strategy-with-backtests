@@ -1,24 +1,59 @@
+from typing import Any, Dict, List, Optional, Tuple
 from shared_imports import time, setup_loggers,Config,copy
 from trading_state import TradingState,asyncio
 
 decision_logger, output_logger = setup_loggers()
 
-# 策略计算函数 (拆分成小函数)
-def extract_valid_quotes(exchange_data):
-    """提取有效报价"""
+def extract_valid_quotes(exchange_data: Dict[str, Dict[str, Optional[float]]]) -> List[Tuple[str, float, float]]:
+    """
+    Extract valid bid/ask quotes from exchange data.
+    
+    Filters out exchanges with missing bid or ask prices and returns
+    valid quotes as tuples for arbitrage calculation.
+    
+    Args:
+        exchange_data: Dictionary mapping exchange names to price data
+            {exchange: {"bid": price, "ask": price}}
+            
+    Returns:
+        List of tuples: [(exchange_name, best_bid_price, best_ask_price), ...]
+        Only includes exchanges with both bid and ask prices available.
+    """
     quotes = []
     for exchange, data in exchange_data.items():
-        bids = data.get('bids')
-        asks = data.get('asks')
-        if bids and asks:
-            best_bid_price = float(bids[0][0])
-            best_ask_price = float(asks[0][0])
+        bid = data.get('bid')
+        ask = data.get('ask')
+        if bid and ask:
+            best_bid_price = bid
+            best_ask_price = ask
 
             quotes.append((exchange, best_bid_price, best_ask_price))
     return quotes
 
-def create_opportunity_dict(symbol, best_buy, best_sell, quotes):
-    """创建机会字典"""
+def create_opportunity_dict(symbol: str, best_buy: Tuple[str, float, float], 
+                          best_sell: Tuple[str, float, float], 
+                          quotes: List[Tuple[str, float, float]]) -> Dict[str, Any]:
+    """
+    Create arbitrage opportunity dictionary with spread calculations.
+    
+    Args:
+        symbol: Trading symbol (e.g., "BTCUSDT")
+        best_buy: Tuple of (exchange, bid_price, ask_price) with lowest ask
+        best_sell: Tuple of (exchange, bid_price, ask_price) with highest bid
+        quotes: List of all valid exchange quotes
+        
+    Returns:
+        Opportunity dictionary containing:
+        - symbol (str): Trading symbol
+        - best_buy_exchange (str): Exchange with lowest ask price
+        - best_buy_price (float): Lowest ask price (buy price)
+        - best_sell_exchange (str): Exchange with highest bid price  
+        - best_sell_price (float): Highest bid price (sell price)
+        - open_spread (float): Price difference (sell_price - buy_price)
+        - open_spread_pct (float): Percentage spread (2 * spread / (buy + sell))
+        - quotes (List[Tuple]): All valid exchange quotes
+        - time_stamp_opportunity (float): Unix timestamp of opportunity detection
+    """
     open_spread = best_sell[1] - best_buy[2]
     open_spread_pct = 2 * open_spread / (best_buy[2] + best_sell[1])
     
@@ -34,8 +69,22 @@ def create_opportunity_dict(symbol, best_buy, best_sell, quotes):
         'time_stamp_opportunity': time.time()
     }
 
-def calculate_opportunity(symbol, exchange_data):
-    """计算套利机会"""
+def calculate_opportunity(symbol: str, exchange_data: Dict[str, Dict[str, Optional[float]]]) -> Optional[Dict[str, Any]]:
+    """
+    Calculate arbitrage opportunity for a given symbol across exchanges.
+    
+    Identifies best buy (lowest ask) and sell (highest bid) prices across
+    exchanges and creates opportunity record if sufficient exchanges available.
+    
+    Args:
+        symbol: Trading symbol to analyze
+        exchange_data: Price data from all exchanges
+            {exchange: {"bid": price, "ask": price}}
+            
+    Returns:
+        Opportunity dictionary (see create_opportunity_dict) or None if
+        fewer than 2 exchanges have valid quotes.
+    """
     quotes = extract_valid_quotes(exchange_data)
     if len(quotes) < 2:
         return None
@@ -45,8 +94,20 @@ def calculate_opportunity(symbol, exchange_data):
 
     return create_opportunity_dict(symbol, best_buy, best_sell, quotes)
 
-async def compute_strategy(state:TradingState):
-    """计算策略"""
+async def compute_strategy(state: TradingState):
+    """
+    Main strategy computation loop for arbitrage detection.
+    
+    Continuously scans all symbols across exchanges to find the best
+    arbitrage opportunity based on spread percentage. Updates state
+    with the highest spread opportunity found in each cycle.
+    
+    Args:
+        state: TradingState instance for market data and opportunity storage
+        
+    Runs indefinitely with Config.COMPUTE_INTERVAL sleep between cycles.
+    Logs decisions and updates state.latest_opportunity with best opportunity.
+    """
     while True:
         async with state.lock: 
             snapshot = copy.deepcopy(state.shared_data)
@@ -70,9 +131,29 @@ async def compute_strategy(state:TradingState):
             
         await asyncio.sleep(Config.COMPUTE_INTERVAL)
 
-# 成本计算函数
-def calculate_open_costs(buy_exchange, sell_exchange, buy_price, sell_price, trade_amount):
-    """计算开仓成本"""
+def calculate_open_costs(buy_exchange: str, sell_exchange: str, 
+                        buy_price: float, sell_price: float, 
+                        trade_amount: float) -> Dict[str, float]:
+    """
+    Calculate costs for opening arbitrage position.
+    
+    Computes trading fees and slippage costs for simultaneous
+    buy and sell orders on different exchanges.
+    
+    Args:
+        buy_exchange: Exchange for buy order
+        sell_exchange: Exchange for sell order
+        buy_price: Purchase price (ask price)
+        sell_price: Sale price (bid price)
+        trade_amount: Quantity to trade
+        
+    Returns:
+        Cost breakdown dictionary:
+        - total_cost (float): Sum of all opening costs
+        - buy_fee (float): Trading fee for buy order
+        - sell_fee (float): Trading fee for sell order
+        - net_entry (float): Net price difference (sell_price - buy_price)
+    """
     trade_amount = float(trade_amount)
     buy_price = float(buy_price)
     sell_price = float(sell_price)
@@ -87,8 +168,29 @@ def calculate_open_costs(buy_exchange, sell_exchange, buy_price, sell_price, tra
         'net_entry': sell_price - buy_price
     }
 
-def calculate_exit_costs(buy_exchange, sell_exchange, current_buy_price, current_sell_price, trade_amount):
-    """计算平仓成本"""
+def calculate_exit_costs(buy_exchange: str, sell_exchange: str,
+                        current_buy_price: float, current_sell_price: float,
+                        trade_amount: float) -> Dict[str, float]:
+    """
+    Calculate costs for closing arbitrage position.
+    
+    Computes trading fees for closing long and short positions
+    (reverse of opening trades).
+    
+    Args:
+        buy_exchange: Exchange where original buy occurred (close short here)
+        sell_exchange: Exchange where original sell occurred (close long here)  
+        current_buy_price: Current bid price at buy exchange
+        current_sell_price: Current ask price at sell exchange
+        trade_amount: Quantity to close
+        
+    Returns:
+        Cost breakdown dictionary:
+        - total_cost (float): Sum of all closing costs
+        - close_long_cost (float): Fee for closing long position
+        - close_short_cost (float): Fee for closing short position
+        - net_exit (float): Net price difference (current_buy - current_sell)
+    """
     trade_amount = float(trade_amount)
     current_buy_price = float(current_buy_price)
     current_sell_price = float(current_sell_price)
@@ -103,12 +205,48 @@ def calculate_exit_costs(buy_exchange, sell_exchange, current_buy_price, current
         'net_exit': current_buy_price - current_sell_price
     }
 
-def calculate_required_margin(trade_amount):
+def calculate_required_margin(trade_amount: float) -> float:
+    """
+    Calculate margin requirement for trade amount.
+    
+    Args:
+        trade_amount: Quantity to trade
+        
+    Returns:
+        Required margin (currently returns 0 - not implemented)
+    """
     return 0
 
-# 交易执行函数
-def enrich_with_costs_and_profits(opportunity,state:TradingState):
-    """丰富机会信息，添加成本和利润计算"""
+def enrich_with_costs_and_profits(opportunity: Dict[str, Any], 
+                                 state: TradingState) -> Optional[Dict[str, Any]]:
+    """
+    Enrich opportunity with detailed cost and profit calculations.
+    
+    Adds comprehensive financial analysis to basic opportunity data including
+    trade sizing, cost calculations, profit estimates, and risk metrics.
+    
+    Args:
+        opportunity: Basic opportunity dictionary from calculate_opportunity
+        state: TradingState for capital calculations
+        
+    Returns:
+        Enriched opportunity dictionary containing all original fields plus:
+        - trade_amount (float): Calculated trade quantity
+        - trade_capital (float): Required capital (trade_amount * buy_price)
+        - capital_utilization_pct (float): Percentage of total capital used
+        - margin_required (float): Required margin
+        - estimated_total_cost (float): Total opening + closing costs
+        - buy_fee (float): Buy order trading fee
+        - sell_fee (float): Sell order trading fee  
+        - net_entry (float): Net entry price difference
+        - estimated_net_profit (float): Expected profit after all costs
+        - estimated_net_profit_pct (float): Profit as percentage of buy price
+        - close_spread_pct (float): Estimated closing spread percentage
+        - stop_loss (float): Stop loss threshold
+        - decision_id (int): Unique decision identifier
+        
+        Returns None if trade_amount <= 0
+    """
     quotes = opportunity['quotes']
     symbol = opportunity['symbol']
     best_buy = min(quotes, key=lambda x: x[2])
@@ -158,7 +296,24 @@ def enrich_with_costs_and_profits(opportunity,state:TradingState):
     }
     return enriched
 
-def should_open_position(enrich_trade, state:TradingState):
+def should_open_position(enrich_trade: Dict[str, Any], state: TradingState) -> bool:
+    """
+    Determine if position should be opened based on strategy criteria.
+    
+    Evaluates enriched trade opportunity against opening thresholds
+    and logs decision reasoning.
+    
+    Args:
+        enrich_trade: Enriched opportunity from enrich_with_costs_and_profits
+        state: TradingState instance
+        
+    Returns:
+        True if position should be opened, False otherwise
+        
+    Criteria:
+        - trade_amount > 0
+        - open_spread_pct >= Config.MIN_SPREAD_PCT_THRESHOLD
+    """
     if enrich_trade['trade_amount'] <= 0:
         return False
     spread_pct = enrich_trade['open_spread_pct']
@@ -170,7 +325,27 @@ def should_open_position(enrich_trade, state:TradingState):
     
     decision_logger.info(f"决策 id: {enrich_trade['decision_id']} 不满足开仓条件: 'estimated_net_profit': {enrich_trade['estimated_net_profit']}, spread_pct={spread_pct:.6f}")
     return False
-def should_close_position(trade, current_status, state):
+
+def should_close_position(trade: Dict[str, Any], current_status: Dict[str, Any], 
+                         state: TradingState) -> bool:
+    """
+    Determine if active position should be closed based on strategy criteria.
+    
+    Evaluates current market conditions against profit-taking and
+    stop-loss thresholds.
+    
+    Args:
+        trade: Original trade record from active_trades
+        current_status: Current position evaluation from evaluate_active_position
+        state: TradingState instance
+        
+    Returns:
+        True if position should be closed, False otherwise
+        
+    Criteria:
+        - Profit taking: current_spread_pct <= open_spread_pct * Config.MAGIC_THRESHOLD
+        - Stop loss: current_spread_pct <= Config.STOP_LOSS_THRESHOLD
+    """
     current_spread_pct =  2 * current_status['current_spread'] / (current_status['current_buy_price'] + current_status['current_sell_price'])
 
     spread_diff = trade['open_spread_pct']
@@ -196,8 +371,31 @@ def should_close_position(trade, current_status, state):
 
     return False
 
-def evaluate_active_position(trade, snapshot, state):
-    """评估活跃仓位"""
+def evaluate_active_position(trade: Dict[str, Any], snapshot: Dict[str, Any], 
+                           state: TradingState) -> Optional[Dict[str, Any]]:
+    """
+    Evaluate current status of active arbitrage position.
+    
+    Calculates unrealized PnL, current spreads, and position metrics
+    for active trade monitoring and close decisions.
+    
+    Args:
+        trade: Active trade record containing opening details
+        snapshot: Current market data snapshot  
+        state: TradingState instance
+        
+    Returns:
+        Position status dictionary:
+        - current_spread (float): Current price spread
+        - unrealized_pnl (float): Unrealized profit/loss
+        - exit_costs (Dict): Estimated closing costs
+        - position_age (float): Time since position opened (seconds)
+        - current_buy_price (float): Current bid at buy exchange
+        - current_sell_price (float): Current ask at sell exchange
+        - decision_id (int): Trade decision identifier
+        
+        Returns None if current prices unavailable
+    """
     symbol = trade['symbol']
     buy_exchange = trade['best_buy_exchange']
     sell_exchange = trade['best_sell_exchange']
@@ -235,6 +433,15 @@ def evaluate_active_position(trade, snapshot, state):
         'decision_id': trade['decision_id'],
     }
 
-
-def determine_exit_reason(trade, current_status):
+def determine_exit_reason(trade: Dict[str, Any], current_status: Dict[str, Any]) -> str:
+    """
+    Determine reason for position exit.
+    
+    Args:
+        trade: Trade record being closed
+        current_status: Current position status
+        
+    Returns:
+        Exit reason string (currently returns "unimplemented")
+    """
     return "unimplemented"

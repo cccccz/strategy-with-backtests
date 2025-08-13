@@ -152,6 +152,7 @@ def display_balance_info(state: TradingState):
 async def display_terminal(state: TradingState):
     while True:
         display_exchange_data(state)
+        # display_exchange_orderbook_data(state)
         display_trade_history(state)
         display_balance_info(state)
         print(f"Last update: {time.strftime('%Y-%m-%d %H:%M:%S')}")

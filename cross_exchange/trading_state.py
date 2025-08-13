@@ -1,7 +1,42 @@
+from typing import Any, Dict, Union
 from shared_imports import asyncio, Config,datetime,redis,get_common_symbols,json
 ## 状态管理类
 class TradingState:
+    """
+    Trading state management class for cryptocurrency arbitrage trading.
+    
+    Manages trading positions, balances, market data, and performance metrics
+    across multiple exchanges. Provides thread-safe operations and Redis
+    integration for data persistence and monitoring.
+    
+    Attributes:
+        shared_data (Dict[str, Dict[str, Dict[str, Optional[float]]]]): Market data structure
+            {symbol: {exchange: {"bid": price, "ask": price}}}
+        active_trades (List[Dict[str, Any]]): Currently open trading positions
+        trade_history (List[Dict[str, Any]]): Complete history of all trades
+        opening_positions (int): Count of currently opening positions
+        lock (asyncio.Lock): Async lock for thread-safe operations
+        decision_id (int): Counter for unique decision identification
+        decision_id_lock (asyncio.Lock): Lock for decision ID generation
+        symbols (List[str]): List of trading symbol pairs (e.g., ["BTCUSDT", "ETHUSDT"])
+        okx_symbols (List[str]): OKX-formatted symbol pairs for API compatibility
+        latest_opportunity (Optional[Dict[str, Any]]): Most recent arbitrage opportunity
+        opportunity_lock (asyncio.Lock): Lock for opportunity updates
+        redis_client (redis.Redis): Redis client for data persistence
+        initial_capital (float): Starting capital amount
+        exchange_balances (Dict[str, Dict[str, float]]): Balance tracking per exchange
+            {exchange: {"available": float, "used": float, "total": float}}
+        total_balance (float): Current total balance across all exchanges
+        total_pnl (float): Total profit and loss since inception
+        balance_lock (asyncio.Lock): Lock for balance operations
+    """
     def __init__(self):
+        """
+        Initialize TradingState with default values and Redis connection.
+        
+        Sets up initial state, locks, counters, and establishes Redis connection
+        for data persistence and monitoring.
+        """
         self.shared_data = {}
         self.active_trades = []
         self.trade_history = []
@@ -23,7 +58,13 @@ class TradingState:
         self.balance_lock = asyncio.Lock()
 
     def init_exchange_balances(self):
-        """初始化各交易所资金分配"""
+        """
+        Initialize exchange balance allocation based on configuration.
+        
+        Distributes initial capital across exchanges according to 
+        Config.EXCHANGE_CAPITAL_ALLOCATION ratios. Sets up balance tracking
+        structure for each configured exchange.
+        """
         for exchange, allocation in Config.EXCHANGE_CAPITAL_ALLOCATION.items():
             self.exchange_balances[exchange] = {
                 'available': self.initial_capital * allocation,
@@ -31,11 +72,38 @@ class TradingState:
                 'total': self.initial_capital * allocation
             }
     
-    def get_available_capital(self, exchange):
-        """获取指定交易所的可用资金"""
+    def get_available_capital(self, exchange: str) -> float:
+        """
+        Get available capital for specified exchange.
+        
+        Args:
+            exchange: Exchange name (e.g., "Binance", "OKX", "Bitget", "Bybit")
+            
+        Returns:
+            Available capital amount for the exchange
+            
+        Raises:
+            KeyError: If exchange is not configured in exchange_balances
+        """
         return self.exchange_balances[exchange]['available']
     
-    def calculate_trade_amount(self, buy_exchange, buy_price, sell_exchange, sell_price):
+    def calculate_trade_amount(self, buy_exchange: str, buy_price: float, 
+                            sell_exchange: str, sell_price: float) -> float:
+        """
+        Calculate maximum tradeable amount based on available capital.
+        
+        Determines the maximum quantity that can be traded considering
+        available capital on both buy and sell exchanges.
+        
+        Args:
+            buy_exchange: Exchange where the buy order will be placed
+            buy_price: Price at which to buy (ask price)
+            sell_exchange: Exchange where the sell order will be placed  
+            sell_price: Price at which to sell (bid price)
+            
+        Returns:
+            Maximum tradeable quantity (in base currency units)
+        """
         buy_available = self.get_available_capital(buy_exchange)
         sell_available = self.get_available_capital(sell_exchange)
 
@@ -50,14 +118,26 @@ class TradingState:
         return trade_amount
 
     
-    async def get_next_decision_id(self):
+    async def get_next_decision_id(self) -> int:
+        """
+        Generate next unique decision ID in thread-safe manner.
+        
+        Returns:
+            Unique integer decision ID for trade tracking
+        """
         async with self.decision_id_lock:
             current_id = self.decision_id
             self.decision_id += 1
             return current_id
 
     def init_symbols(self):
-        """初始化交易对"""
+        """
+        Initialize trading symbols and market data structure.
+        
+        Sets up symbols list from common_symbols, creates OKX-compatible
+        symbol format, and initializes shared_data structure for market
+        data storage across all exchanges.
+        """
         self.symbols = get_common_symbols()
         self.okx_symbols = [symbol.replace('USDT','-USDT').replace('USDT','USDT-SWAP') for symbol in self.symbols]
         
@@ -68,7 +148,20 @@ class TradingState:
         }
 
     async def update_redis_data(self):
-        """Update Redis with data matching your display functions"""
+        """
+        Update Redis with current trading state data.
+        
+        Synchronizes multiple Redis keys with current state including:
+        - Market data (exchange_data)
+        - Current active position
+        - Formatted trade history
+        - Balance information and metrics
+        - Latest arbitrage opportunity
+        - Performance metrics hash
+        
+        Raises:
+            Exception: Logs error if Redis update fails
+        """
         try:
             # 1. Market data (your existing shared_data)
             self.redis_client.set("trading:exchange_data", json.dumps(self.shared_data))
@@ -116,8 +209,39 @@ class TradingState:
         except Exception as e:
             print(f"Error updating Redis: {e}")
 
-    def _format_trade_history(self):
-        """Format trade history matching display_trade_history logic"""
+    def _format_trade_history(self) -> Dict[str, Any]:
+        """
+        Format trade history into paired open/close trades with summary.
+        
+        Groups trade history into matched pairs of open/close actions,
+        calculates current market prices for open trades, and generates
+        performance summary statistics.
+        
+        Returns:
+            Dictionary containing:
+            - trade_pairs: List of formatted trade pair dictionaries
+            - symbol (str): Trading symbol
+            - buy_exchange (str): Buy exchange name
+            - sell_exchange (str): Sell exchange name  
+            - open_buy_price (float): Opening buy price
+            - open_sell_price (float): Opening sell price
+            - close_buy_price (Optional[float]): Closing buy price
+            - close_sell_price (Optional[float]): Closing sell price
+            - current_buy_price (Optional[float]): Current buy price for open trades
+            - current_sell_price (Optional[float]): Current sell price for open trades
+            - open_time (float): Opening timestamp
+            - close_time (Optional[float]): Closing timestamp
+            - pnl (Union[float, str]): Realized PnL or estimated for open trades
+            - status (str): "OPEN" or "CLOSED"
+            - estimated_profit (float): Expected profit amount
+            - summary: Performance summary dictionary
+            - total_trades (int): Count of closed trades
+            - open_trades (int): Count of currently open trades
+            - profitable_trades (int): Count of profitable closed trades
+            - total_pnl (float): Sum of all realized PnL
+            - avg_pnl (float): Average PnL per closed trade
+            - last_updated (str): ISO format timestamp
+        """
         if not self.trade_history:
             return {
                 'trade_pairs': [],
@@ -217,8 +341,19 @@ class TradingState:
             'last_updated': datetime.now().isoformat()
         }
 
-    def calculate_metrics(self):
-        """Calculate trading performance metrics"""
+    def calculate_metrics(self) -> Dict[str, Union[int, float]]:
+        """
+        Calculate comprehensive trading performance metrics.
+        
+        Returns:
+            Performance metrics dictionary:
+            - total_trades (int): Total number of trades executed
+            - win_rate (float): Percentage of profitable trades (0-100)
+            - total_profit (float): Sum of all trade profits
+            - avg_profit_per_trade (float): Average profit per trade
+            - best_trade (float): Highest single trade profit
+            - worst_trade (float): Lowest single trade profit (most negative loss)
+        """
         if not self.trade_history:
             return {
                 'total_trades': 0,
@@ -238,13 +373,38 @@ class TradingState:
             'worst_trade': min((t.get('profit', 0) for t in self.trade_history), default=0)
         }
 
-    def add_trade(self, trade_data):
-        """Add a new trade to history"""
+    def add_trade(self, trade_data: Dict[str, Any]):
+        """
+        Add new trade record to history with timestamp.
+        
+        Args:
+            trade_data: Trade information dictionary containing:
+                Required fields depend on action:
+                - action (str): "open" or "close"
+                - symbol (str): Trading symbol
+                - decision_id (int): Unique decision identifier
+                - For "open": best_buy_exchange, best_sell_exchange, 
+                            best_buy_price, best_sell_price, trade_amount, etc.
+                - For "close": pnl, exit_reason, current_buy_price, 
+                            current_sell_price, close_time
+        """
         trade_data['timestamp'] = datetime.now().isoformat()
         self.trade_history.append(trade_data)
 
-    def update_balance(self, exchange, amount):
-        """Update exchange balance"""
+    def update_balance(self, exchange: str, amount: float):
+        """
+        Update exchange balance and recalculate totals.
+        
+        Args:
+            exchange: Exchange name to update
+            amount: Amount to add to available balance (can be negative)
+            
+        Updates total_balance and total_pnl automatically based on
+        new balance calculations.
+        
+        Raises:
+            KeyError: If exchange is not found in exchange_balances
+        """
         if exchange in self.exchange_balances:
             self.exchange_balances[exchange]['available'] += amount
             self.total_balance = sum(bal['available'] + bal['used'] 
