@@ -6,7 +6,8 @@ class Config:
     MAX_POSITION_SIZE = 1
     MAX_HOLDING_TIME = 300
     STOP_LOSS_PCT = -0.002
-    SLIPPAGE_RATE = 0.0005
+    # SLIPPAGE_RATE = 0.0005
+    MAX_SLIPPAGE_RATE = 0.001
     
     # WebSocket重连参数
     MAX_RECONNECT_ATTEMPTS = 5
@@ -14,11 +15,11 @@ class Config:
     CONNECTION_TIMEOUT = 10
     
         # 价差阈值设置
-    MIN_SPREAD_THRESHOLD = 0.001      # 最小开仓价差 (绝对值)
-    MIN_SPREAD_PCT_THRESHOLD = 0.004 # 最小开仓价差百分比 自测0.005很难开仓
+    # MIN_SPREAD_THRESHOLD = 0.001      # 最小开仓价差 (绝对值)
+    MIN_SPREAD_PCT_THRESHOLD = 0.003 # 最小开仓价差百分比 自测0.005很难开仓，调低容易开仓
 
     
-    MAGIC_THRESHOLD = 0.5        # 不确定它是否对应现实中的任何有意义的数据
+    MAGIC_THRESHOLD = 0.8        # 不确定它是否对应现实中的任何有意义的数据,测试调高容易平仓,0.5配合上面0.004
     STOP_LOSS_THRESHOLD = -0.002      # 止损阈值
     MAX_POSITION_TIME = 30           # 最大持仓时间 (秒)
     MAX_POSITION_SIZE = 1             # 最大持仓数量
@@ -43,6 +44,9 @@ class Config:
     MAX_TRADE_CAPITAL_PCT = 0.1
     # 最小交易金额
     MIN_TRADE_AMOUNT = 10.0
+
+    # 账本深度
+    MAX_ORDERBOOK_DEPTH = 15
 
 # 交易金额
 # 交易数量

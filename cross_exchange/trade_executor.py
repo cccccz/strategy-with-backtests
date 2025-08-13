@@ -2,7 +2,6 @@ from typing import Any, Dict
 from shared_imports import setup_loggers,time,asyncio
 from strategy_engine import determine_exit_reason,enrich_with_costs_and_profits,should_close_position,should_open_position,Config,evaluate_active_position,copy
 from trading_state import TradingState
-decision_logger, output_logger = setup_loggers()
 
 def open_position(enrich_trade: Dict[str, Any], state: TradingState):
     """
@@ -33,18 +32,18 @@ def open_position(enrich_trade: Dict[str, Any], state: TradingState):
     """
     buy_exchange = enrich_trade['best_buy_exchange']
     sell_exchange = enrich_trade['best_sell_exchange']
+
     trade_capital = enrich_trade['trade_capital']
+    trade_capital_sell = enrich_trade['trade_capital_sell']
 
     state.exchange_balances[buy_exchange]['available'] -= trade_capital
     state.exchange_balances[buy_exchange]['used'] += trade_capital
     state.exchange_balances[buy_exchange]['total'] = state.exchange_balances[buy_exchange]['used'] + state.exchange_balances[buy_exchange]['available']
 
 
-    state.exchange_balances[sell_exchange]['available'] -= trade_capital
-    state.exchange_balances[sell_exchange]['used'] += trade_capital
+    state.exchange_balances[sell_exchange]['available'] -= trade_capital_sell
+    state.exchange_balances[sell_exchange]['used'] += trade_capital_sell
     state.exchange_balances[sell_exchange]['total'] = state.exchange_balances[sell_exchange]['used'] + state.exchange_balances[sell_exchange]['available']
-
-
 
     enrich_trade['trade_time'] = time.time()
     enrich_trade['action'] = 'open'
@@ -55,7 +54,7 @@ def open_position(enrich_trade: Dict[str, Any], state: TradingState):
     output_logger.info(f"开仓：决策id: {enrich_trade['decision_id']}, 货币种类：{enrich_trade['symbol']}，购买交易所：{enrich_trade['best_buy_exchange']}，购买价：{enrich_trade['best_buy_price']}，出售交易所：{enrich_trade['best_sell_exchange']}，出售价：{enrich_trade['best_sell_price']}，价差：{enrich_trade['open_spread']}，价差比：{enrich_trade['open_spread_pct']}")
 
 
-def close_position(trade: Dict[str, Any], current_status: Dict[str, Any], state: TradingState):
+def close_position(trade: Dict[str, Any], current_status: Dict[str, Any], state: TradingState,decision_logger,output_logger):
     """
     Execute position closing by updating balances and recording final PnL.
     
@@ -136,7 +135,7 @@ def close_position(trade: Dict[str, Any], current_status: Dict[str, Any], state:
         f"平仓: 决策id: {current_status['decision_id']}, 货币种类: {trade['symbol']}，平仓（卖出）交易所: {trade['best_buy_exchange']}, 平仓（卖出）价: {current_status['current_buy_price']}, 出售交易所：{trade['best_sell_exchange']}，平仓价：{current_status['current_sell_price']}，原始价差：{trade['open_spread']}，原始价差比：{trade['open_spread_pct']}，当前价差：{current_spread:.6f}，当前价差比：{current_spread_pct:.6f}，最终收益：{trade['pnl']:.6f}"
     )
 
-async def execute_simulation(state: TradingState):
+async def execute_simulation(state: TradingState,decision_logger,output_logger):
     """
     Main trading simulation execution loop.
     
@@ -182,8 +181,8 @@ async def execute_simulation(state: TradingState):
             continue
         enrich_trade = enrich_with_costs_and_profits(opportunity,state)
         async with state.lock:
-            if  should_open_position(enrich_trade, state):
-                open_position(enrich_trade, state)
+            if  should_open_position(enrich_trade, state,decision_logger,output_logger):
+                open_position(enrich_trade, state,decision_logger)
 
         async with state.lock:
             if state.opening_positions < 0:
@@ -193,7 +192,7 @@ async def execute_simulation(state: TradingState):
                 snapshot = copy.deepcopy(state.shared_data)
                 trade = state.active_trades[0]
                 current_status = evaluate_active_position(trade, snapshot, state)
-                if current_status and should_close_position(trade, current_status, state):
-                    close_position(trade, current_status, state)
+                if current_status and should_close_position(trade, current_status, state,decision_logger,output_logger):
+                    close_position(trade, current_status, state,decision_logger,output_logger)
                 
         await asyncio.sleep(0.1)

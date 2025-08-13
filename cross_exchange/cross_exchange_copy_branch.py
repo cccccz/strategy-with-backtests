@@ -86,19 +86,20 @@ async def main():
     
     # 启动所有任务
     tasks = [
-        binance_ws(state),
-        bitget_ws(state),
-        okx_ws(state),
-        bybit_ws(state),
-        # binance_orderbook_ws(state),
-        # bitget_orderbook_ws(state),
-        # okx_orderbook_ws(state),
-        # bybit_orderbook_ws(state),
-        compute_strategy(state),
-        execute_simulation(state),
+        # binance_ws(state),
+        # bitget_ws(state),
+        # okx_ws(state),
+        # bybit_ws(state),
+        binance_orderbook_ws(state),
+        bitget_orderbook_ws(state),
+        okx_orderbook_ws(state),
+        bybit_orderbook_ws(state),
+        compute_strategy(state,decision_logger,output_logger),
+        execute_simulation(state,decision_logger,output_logger),
         display_terminal(state),
         update_redis_data(state)
     ]
+    # 三重日志的原因是因为在3个文件里分别setup_logger了
     
     await asyncio.gather(*tasks)
 

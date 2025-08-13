@@ -663,7 +663,6 @@ def should_close_position(trade, current_status, state):
     current_time = time.time()
     holding_time = current_time - trade['trade_time']
     if holding_time > Config.MAX_HOLDING_TIME:
-        
         return True
     spread_diff = trade['open_spread_pct']
     # if (trade['open_spread_pct'] - current_spread_pct) >= Config.PROFIT_THRESHOLD:
@@ -710,7 +709,7 @@ def close_position(trade, current_status, state):
 
     # state.exchange_balances[sell_exchange]['used'] -= trade_capital
     # state.exchange_balances[sell_exchange]['available'] += trade_capital + pnl / 2
-    state.exchange_balances[sell_exchange]['available'] += pnl / 2
+    state.exchange_balances[sell_exchange]['available'] +=  pnl / 2
 
     state.total_pnl += pnl
     state.total_balance  = state.initial_capital + state.total_pnl
